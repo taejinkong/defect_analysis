@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Watch Display 불량 분석 — 전처리</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Watch Display 불량 분석</h1>
+        <p class="subtitle">1단계 · 전처리 파이프라인 (원 검출 · FPCB 6시 정렬)</p>
+      </div>
+      <p class="privacy">이미지는 이 브라우저 안에서만 처리됩니다. 서버로 전송되지 않습니다.</p>
+    </header>
+
+    <main>
+      <section class="intake" id="intake">
+        <div class="dropzone" id="dropzone">
+          <p class="dz-title">점등 이미지를 여기에 끌어다 놓으세요</p>
+          <p class="dz-hint">
+            파일명 규칙 <code>{LOT_ID}_{PANEL_CODE}_{PATTERN}.png</code> — 예: <code>LOT2401_P001_R.png</code>
+          </p>
+          <div class="dz-actions">
+            <button type="button" id="pick">파일 선택</button>
+            <button type="button" id="sample" class="ghost">샘플 이미지 생성</button>
+          </div>
+          <input type="file" id="file-input" accept="image/png,image/jpeg,image/bmp" multiple hidden />
+        </div>
+        <p class="sample-note">
+          실제 이미지가 없을 때 <strong>샘플 이미지 생성</strong>으로 파이프라인을 확인할 수 있습니다.
+          무작위 회전이 적용된 합성 패널 1장이 만들어집니다.
+        </p>
+      </section>
+
+      <section id="summary" class="summary" hidden></section>
+      <section id="panels" class="panels"></section>
+    </main>
+
+    <div class="detail" id="detail" hidden>
+      <div class="detail-inner">
+        <header class="detail-head">
+          <div>
+            <h2 id="detail-title"></h2>
+            <p id="detail-status" class="detail-status"></p>
+          </div>
+          <button type="button" id="detail-close" class="ghost">닫기</button>
+        </header>
+
+        <div class="detail-body">
+          <figure class="stage">
+            <figcaption>원본 · 검출 결과</figcaption>
+            <canvas id="src-canvas"></canvas>
+          </figure>
+          <figure class="stage">
+            <figcaption>정규화 프레임 512×512 · FPCB 6시</figcaption>
+            <canvas id="frame-canvas"></canvas>
+          </figure>
+        </div>
+
+        <div class="controls">
+          <div class="control-row">
+            <label for="rotation">회전각 <span id="rotation-value">0.0°</span></label>
+            <input type="range" id="rotation" min="0" max="359.5" step="0.5" value="0" />
+          </div>
+          <div class="control-row" id="manual-circle" hidden>
+            <p class="manual-hint">자동 검출에 실패했습니다. 원을 직접 지정하세요.</p>
+            <label>중심 X <input type="range" id="cx" min="0" max="100" step="0.5" /></label>
+            <label>중심 Y <input type="range" id="cy" min="0" max="100" step="0.5" /></label>
+            <label>반지름 <input type="range" id="cr" min="1" max="100" step="0.5" /></label>
+          </div>
+          <div class="control-actions">
+            <button type="button" id="reset-rotation" class="ghost">자동 추정값으로</button>
+            <button type="button" id="apply-panel" class="ghost">패널 전체에 적용</button>
+            <button type="button" id="confirm">회전각 확정</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

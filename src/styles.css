@@ -1,0 +1,361 @@
+:root {
+  --bg: #10131a;
+  --surface: #171b25;
+  --surface-2: #1f2532;
+  --border: #2b3242;
+  --text: #e6e9ef;
+  --muted: #97a0b3;
+  --accent: #3ddc97;
+  --warn: #ffb454;
+  --danger: #ff6b6b;
+  --axis: #7aa2ff;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * Must outrank the class rules below that set `display`. A bare `[hidden]`
+ * selector loses the cascade to `.detail { display: grid }`, which would leave
+ * the modal permanently on screen.
+ */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+h1 {
+  margin: 0;
+  font-size: 19px;
+}
+h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.privacy {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent);
+  border: 1px solid rgba(61, 220, 151, 0.3);
+  background: rgba(61, 220, 151, 0.08);
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: 14px;
+  padding: 40px 24px;
+  text-align: center;
+  background: var(--surface);
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone.over {
+  border-color: var(--accent);
+  background: rgba(61, 220, 151, 0.06);
+}
+.dz-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.dz-hint {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.dz-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.sample-note {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 10px 2px 0;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #08130d;
+  cursor: pointer;
+}
+button:hover {
+  filter: brightness(1.08);
+}
+button.ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+button.ghost:hover {
+  border-color: var(--muted);
+  filter: none;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+code {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12.5px;
+}
+
+.summary {
+  margin-top: 26px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 18px;
+  min-width: 120px;
+}
+.stat .value {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.stat .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.stat.alert .value {
+  color: var(--warn);
+}
+
+.panels {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.panel-id {
+  font-weight: 650;
+}
+.panel-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(255, 180, 84, 0.4);
+  background: rgba(255, 180, 84, 0.1);
+}
+.badge.danger {
+  color: var(--danger);
+  border-color: rgba(255, 107, 107, 0.4);
+  background: rgba(255, 107, 107, 0.1);
+}
+.badge.ok {
+  color: var(--accent);
+  border-color: rgba(61, 220, 151, 0.35);
+  background: rgba(61, 220, 151, 0.1);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.tile {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  padding: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  font-weight: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tile:hover {
+  border-color: var(--accent);
+  filter: none;
+}
+.tile canvas {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: #000;
+  border-radius: 6px;
+  display: block;
+}
+.tile-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tile-pattern {
+  font-weight: 700;
+  font-size: 13px;
+}
+.tile-note {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.detail {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 12, 0.82);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  z-index: 10;
+}
+.detail-inner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  width: min(1040px, 100%);
+}
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.detail-status {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.detail-status.error {
+  color: var(--danger);
+}
+.detail-status.warn {
+  color: var(--warn);
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 860px) {
+  .detail-body {
+    grid-template-columns: 1fr;
+  }
+}
+.stage {
+  margin: 0;
+}
+.stage figcaption {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.stage canvas {
+  width: 100%;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: block;
+}
+
+.controls {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.control-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.control-row label {
+  font-size: 13px;
+  color: var(--muted);
+}
+.control-row input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+#rotation-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.manual-hint {
+  margin: 0 0 4px;
+  color: var(--warn);
+  font-size: 13px;
+}
+.control-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
