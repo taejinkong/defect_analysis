@@ -9,9 +9,10 @@ import { formatClock, normalizeAngle } from './core/geometry';
 import { addBrightDot, addDarkDot, addLine, blankPanel, polarToSource, renderSyntheticPanel } from './core/synthetic';
 import { detectDefects, type ImageDetection } from './core/defects';
 import { judgePanel, type PanelVerdict } from './core/verdict';
-import { DEFECT, DEFECT_NAME } from './core/settings';
+import { DEFECT, DEFECT_NAME, type Settings } from './core/settings';
 import { fileToRgba, paintRgba } from './browser/decode';
 import { drawDetections, drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
+import { createSettingsPanel, loadSettings } from './browser/settingsPanel';
 
 interface Item {
   readonly id: string;
@@ -32,6 +33,11 @@ let selected: Item | null = null;
 let sampleCount = 0;
 
 const panelKey = (lotId: string, panelCode: string): string => `${lotId} ${panelCode}`;
+
+/** Thresholds currently in force. Restored from this browser on load. */
+let settings: Settings = loadSettings();
+/** Settings changed since the last analysis run, so the verdicts on screen are stale. */
+let verdictsStale = false;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -54,6 +60,46 @@ const cyInput = $<HTMLInputElement>('cy');
 const crInput = $<HTMLInputElement>('cr');
 const toolbar = $('toolbar');
 const analyzeNote = $('analyze-note');
+const detailDetections = $('detail-detections');
+
+// ---------------------------------------------------------------- thresholds
+
+const settingsPanel = createSettingsPanel(settings, {
+  onChange: (next) => {
+    settings = next;
+    if (verdicts.size > 0) verdictsStale = true;
+    // The detail view is the tuning loop: one image, recomputed as the slider
+    // moves, so the effect of a threshold is visible immediately.
+    scheduleLivePreview();
+  },
+  onCommit: () => renderAnalyzeNote(),
+});
+const settingsMount = $('settings-mount');
+settingsMount.append(settingsPanel.element);
+
+/**
+ * The tuning loop needs the sliders and the preview on screen together, but the
+ * detail view is a full-screen modal. Move the one panel element in and out
+ * rather than keeping two copies of the sliders in sync.
+ */
+function moveSettingsPanel(into: HTMLElement): void {
+  into.append(settingsPanel.element);
+}
+
+let previewPending = false;
+
+/**
+ * Coalesce redraws to one per frame. A slider fires `input` far faster than a
+ * ~70ms detection pass can finish, and queued passes would lag behind the thumb.
+ */
+function scheduleLivePreview(): void {
+  if (previewPending || !selected) return;
+  previewPending = true;
+  requestAnimationFrame(() => {
+    previewPending = false;
+    if (selected) redrawDetail();
+  });
+}
 
 // ---------------------------------------------------------------- intake
 
@@ -194,6 +240,8 @@ async function addFiles(files: File[]): Promise<void> {
 /** Any geometry change invalidates a previously computed verdict. */
 function invalidateVerdicts(): void {
   verdicts.clear();
+  verdictsStale = false;
+  lastRunNote = '';
 }
 
 function addItem(name: string, rgba: Rgba): void {
@@ -220,7 +268,21 @@ function addItem(name: string, rgba: Rgba): void {
 /** Normalize one image with the panel's confirmed geometry and run the detector. */
 function analyzeItem(item: Item, pattern: Pattern, circle: Circle, rotationDeg: number): ImageDetection {
   const frame = normalizeFrame(item.rgba, circle, rotationDeg);
-  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, pattern);
+  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, pattern, settings);
+}
+
+/** Which panel and pattern an item belongs to, or null when its name did not parse. */
+function locate(item: Item): { key: string; pattern: Pattern; reference: Item } | null {
+  const { panels } = groupByFilename(items, (it) => it.name);
+  for (const panel of panels) {
+    for (const pattern of PATTERNS) {
+      if (panel.images[pattern] !== item) continue;
+      const present = PATTERNS.map((p) => panel.images[p]).filter((it): it is Item => it !== undefined);
+      const reference = present.find((it) => it.detect.ok) ?? item;
+      return { key: panelKey(panel.lotId, panel.panelCode), pattern, reference };
+    }
+  }
+  return null;
 }
 
 $('analyze').addEventListener('click', () => {
@@ -249,14 +311,35 @@ $('analyze').addEventListener('click', () => {
       const geometry = item.detect.ok ? item : reference;
       images.push(analyzeItem(item, pattern, geometry.circle, geometry.rotationDeg));
     }
-    if (images.length > 0) verdicts.set(panelKey(panel.lotId, panel.panelCode), judgePanel(images));
+    if (images.length > 0) verdicts.set(panelKey(panel.lotId, panel.panelCode), judgePanel(images, settings));
   }
   const elapsed = performance.now() - started;
 
-  const note = `${verdicts.size}개 패널 분석 완료 · ${elapsed.toFixed(0)}ms`;
-  analyzeNote.textContent = skipped > 0 ? `${note} · 원 검출 실패로 ${skipped}장 제외` : note;
+  verdictsStale = false;
+  lastRunNote = `${verdicts.size}개 패널 분석 완료 · ${elapsed.toFixed(0)}ms`;
+  if (skipped > 0) lastRunNote += ` · 원 검출 실패로 ${skipped}장 제외`;
   render();
 });
+
+let lastRunNote = '';
+
+function renderAnalyzeNote(): void {
+  if (verdictsStale) {
+    analyzeNote.innerHTML = '';
+    const warn = document.createElement('span');
+    warn.className = 'stale';
+    warn.textContent = '임계값이 바뀌었습니다 — 재분석이 필요합니다.';
+    analyzeNote.append(warn);
+    return;
+  }
+  if (lastRunNote) {
+    analyzeNote.textContent = lastRunNote;
+    return;
+  }
+  const unconfirmed = items.filter((it) => it.detect.ok && !it.confirmed).length;
+  analyzeNote.textContent =
+    unconfirmed > 0 ? `회전각 미확정 ${unconfirmed}건 — 자동 추정값으로 분석됩니다.` : '';
+}
 
 // ---------------------------------------------------------------- rendering
 
@@ -265,10 +348,7 @@ function render(): void {
   renderSummary(panels.length, unparsed.length);
 
   toolbar.hidden = items.length === 0;
-  const unconfirmed = items.filter((it) => it.detect.ok && !it.confirmed).length;
-  if (unconfirmed > 0 && verdicts.size === 0) {
-    analyzeNote.textContent = `회전각 미확정 ${unconfirmed}건 — 자동 추정값으로 분석됩니다.`;
-  }
+  renderAnalyzeNote();
 
   panelsEl.replaceChildren();
   for (const panel of panels) panelsEl.append(renderPanel(panel));
@@ -456,6 +536,7 @@ function drawThumb(canvas: HTMLCanvasElement, item: Item): void {
 function openDetail(item: Item): void {
   selected = item;
   detailEl.hidden = false;
+  moveSettingsPanel($('detail-settings'));
 
   $('detail-title').textContent = item.name;
 
@@ -506,28 +587,47 @@ function redrawDetail(): void {
     drawSourceOverlay(srcCtx, item.circle, normalizeAngle(-item.rotationDeg), item.detect.ok && item.detect.fpcbReliable);
   }
 
-  const frame = normalizeFrame(item.rgba, item.circle, item.rotationDeg);
+  // Geometry: an unlit image has no circle of its own, so fall back to a
+  // sibling pattern's, exactly as the batch analysis does.
+  const location = locate(item);
+  const geometrySource = item.detect.ok ? item : (location?.reference ?? item);
+  const frame = normalizeFrame(item.rgba, geometrySource.circle, geometrySource.rotationDeg);
+
   paintRgba(frameCanvas, frame.image);
   const frameCtx = frameCanvas.getContext('2d');
-  if (frameCtx) {
-    drawFrameOverlay(frameCtx);
-    const marks = detectionsFor(item);
-    if (marks.length > 0) drawDetections(frameCtx, marks);
-  }
+  if (!frameCtx) return;
+  drawFrameOverlay(frameCtx);
+
+  const pattern = location?.pattern ?? 'W';
+  const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, pattern, settings);
+
+  // Reuse the panel verdict's suppression decisions when they are still current;
+  // a lone image cannot know whether a defect was confirmed across patterns.
+  const verdict = location && !verdictsStale ? verdicts.get(location.key) : undefined;
+  const suppressedKinds = new Set(verdict?.suppressed ?? []);
+  const marks = detection.detections.map((d) => ({
+    x: d.x,
+    y: d.y,
+    bbox: d.bbox,
+    counted: !suppressedKinds.has(d.kind),
+  }));
+  drawDetections(frameCtx, marks);
+
+  detailDetections.textContent = describeDetection(detection);
 }
 
-/** Detections belonging to this image, from the panel verdict if one exists. */
-function detectionsFor(item: Item): { x: number; y: number; bbox: readonly [number, number, number, number]; counted: boolean }[] {
-  const { panels } = groupByFilename(items, (it) => it.name);
-  for (const panel of panels) {
-    for (const pattern of PATTERNS) {
-      if (panel.images[pattern] !== item) continue;
-      const verdict = verdicts.get(panelKey(panel.lotId, panel.panelCode));
-      if (!verdict) return [];
-      return verdict.labeled.filter((l) => l.pattern === pattern);
-    }
+function describeDetection(detection: ImageDetection): string {
+  if (detection.noDisplay !== 'none') {
+    const label = detection.noDisplay === 'full' ? '전체 미점등' : '부분 미점등';
+    return `${label} · 평균 휘도 ${detection.meanLuma.toFixed(1)}`;
   }
-  return [];
+  const counts = new Map<string, number>();
+  for (const d of detection.detections) counts.set(d.kind, (counts.get(d.kind) ?? 0) + 1);
+
+  const parts = [`dark_area_ratio ${detection.darkAreaPct.toFixed(2)}%`];
+  parts.push(counts.size > 0 ? [...counts].map(([k, n]) => `${k} ×${n}`).join(', ') : '검출 없음');
+  if (detection.drivingFlag) parts.push('구동불량 의심');
+  return parts.join(' · ');
 }
 
 rotationInput.addEventListener('input', () => {
@@ -591,6 +691,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 function closeDetail(): void {
+  moveSettingsPanel(settingsMount);
   detailEl.hidden = true;
   selected = null;
+  render();
 }
