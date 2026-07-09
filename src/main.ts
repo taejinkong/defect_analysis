@@ -6,9 +6,12 @@ import { groupByFilename, type PanelGroup } from './core/filename';
 import { detectActiveCircle, type DetectResult } from './core/preprocess';
 import { normalizeFrame } from './core/normalize';
 import { formatClock, normalizeAngle } from './core/geometry';
-import { renderSyntheticPanel } from './core/synthetic';
+import { addBrightDot, addDarkDot, addLine, blankPanel, polarToSource, renderSyntheticPanel } from './core/synthetic';
+import { detectDefects, type ImageDetection } from './core/defects';
+import { judgePanel, type PanelVerdict } from './core/verdict';
+import { DEFECT, DEFECT_NAME } from './core/settings';
 import { fileToRgba, paintRgba } from './browser/decode';
-import { drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
+import { drawDetections, drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
 
 interface Item {
   readonly id: string;
@@ -23,8 +26,12 @@ interface Item {
 }
 
 const items: Item[] = [];
+/** Panel verdicts, keyed by `${lotId} ${panelCode}`. */
+const verdicts = new Map<string, PanelVerdict>();
 let selected: Item | null = null;
 let sampleCount = 0;
+
+const panelKey = (lotId: string, panelCode: string): string => `${lotId} ${panelCode}`;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -45,6 +52,8 @@ const manualBox = $('manual-circle');
 const cxInput = $<HTMLInputElement>('cx');
 const cyInput = $<HTMLInputElement>('cy');
 const crInput = $<HTMLInputElement>('cr');
+const toolbar = $('toolbar');
+const analyzeNote = $('analyze-note');
 
 // ---------------------------------------------------------------- intake
 
@@ -54,21 +63,103 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
+type Geometry = { cx: number; cy: number; r: number };
+
+/**
+ * Defects are painted in *panel* coordinates, then rotated into the capture.
+ *
+ * "가로줄" means horizontal with respect to the panel's own pixel grid, which is
+ * only horizontal on screen once FPCB sits at 6 o'clock. A capture whose tab is
+ * at angle T shows every panel-fixed feature rotated by T, so a panel-horizontal
+ * line must be drawn at T degrees here. Painting it at 0 instead would produce a
+ * diagonal streak after normalization, which the detector rightly calls a dot.
+ */
+interface Scenario {
+  readonly name: string;
+  readonly paint: (img: Rgba, g: Geometry, tabAngleDeg: number) => void;
+}
+
+/** Place a point given in panel-relative polar coordinates. */
+const place = (g: Geometry, rRatio: number, panelAngleDeg: number, tab: number): { x: number; y: number } =>
+  polarToSource(g, rRatio, panelAngleDeg + tab);
+
+const SCENARIOS: readonly Scenario[] = [
+  { name: '양품', paint: () => {} },
+  {
+    name: '암점 小',
+    paint: (img, g, tab) => {
+      const p = place(g, 0.62, 128, tab);
+      addDarkDot(img, p.x, p.y, g.r * 0.05);
+    },
+  },
+  {
+    name: '암점 中',
+    paint: (img, g) => addDarkDot(img, g.cx, g.cy, g.r * 0.3),
+  },
+  {
+    name: '암점 大',
+    paint: (img, g, tab) => {
+      const p = place(g, 0.25, 300, tab);
+      addDarkDot(img, p.x, p.y, g.r * 0.45);
+    },
+  },
+  {
+    name: '명점',
+    paint: (img, g, tab) => {
+      const p = place(g, 0.4, 45, tab);
+      addBrightDot(img, p.x, p.y, g.r * 0.03, 255);
+    },
+  },
+  {
+    name: '명선_가로줄',
+    paint: (img, g, tab) => {
+      const p = place(g, 0.3, 180, tab); // above center, panel-relative
+      addLine(img, p.x, p.y, g.r * 1.3, 3, tab, 255);
+    },
+  },
+  {
+    name: '암선_세로줄',
+    paint: (img, g, tab) => {
+      const p = place(g, 0.2, 270, tab);
+      addLine(img, p.x, p.y, g.r * 1.3, 3, 90 + tab, 6);
+    },
+  },
+  {
+    name: '복수불량',
+    paint: (img, g, tab) => {
+      const dot = place(g, 0.6, 210, tab);
+      addDarkDot(img, dot.x, dot.y, g.r * 0.05);
+      const line = place(g, 0.35, 180, tab);
+      addLine(img, line.x, line.y, g.r * 1.2, 3, tab, 255);
+    },
+  },
+  {
+    // Partial rather than total: a totally unlit capture has no circle to find,
+    // so it needs the manual-circle path instead of the automatic one.
+    name: '미점등 (부분)',
+    paint: (img, g) => blankPanel(img, g.cx, g.cy, g.r * 0.85, 5),
+  },
+];
+
 $('sample').addEventListener('click', () => {
   sampleCount++;
   // One click yields a whole panel: four patterns of the same physical capture,
   // so they share circle geometry and tab angle, as real captures would.
-  const geometry = {
-    tabAngleDeg: Math.round(Math.random() * 3600) / 10,
+  const geometry: Geometry = {
     cx: 300 + Math.random() * 40,
     cy: 300 + Math.random() * 40,
     r: 215 + Math.random() * 30,
   };
+  const tabAngleDeg = Math.round(Math.random() * 3600) / 10;
+  const scenario = SCENARIOS[(sampleCount - 1) % SCENARIOS.length]!;
   const code = `P${String(sampleCount).padStart(3, '0')}`;
+
   for (const [i, pattern] of PATTERNS.entries()) {
-    const rgba = renderSyntheticPanel({ ...geometry, pattern, seed: sampleCount * 977 + i });
+    const rgba = renderSyntheticPanel({ ...geometry, tabAngleDeg, pattern, seed: sampleCount * 977 + i });
+    scenario.paint(rgba, geometry, tabAngleDeg);
     addItem(`SAMPLE_${code}_${pattern}.png`, rgba);
   }
+  invalidateVerdicts();
   render();
 });
 
@@ -100,6 +191,11 @@ async function addFiles(files: File[]): Promise<void> {
   render();
 }
 
+/** Any geometry change invalidates a previously computed verdict. */
+function invalidateVerdicts(): void {
+  verdicts.clear();
+}
+
 function addItem(name: string, rgba: Rgba): void {
   const detect = detectActiveCircle(rgba);
   const fallback: Circle = { cx: rgba.width / 2, cy: rgba.height / 2, r: Math.min(rgba.width, rgba.height) * 0.4 };
@@ -119,11 +215,60 @@ function addItem(name: string, rgba: Rgba): void {
   });
 }
 
+// ---------------------------------------------------------------- analysis
+
+/** Normalize one image with the panel's confirmed geometry and run the detector. */
+function analyzeItem(item: Item, pattern: Pattern, circle: Circle, rotationDeg: number): ImageDetection {
+  const frame = normalizeFrame(item.rgba, circle, rotationDeg);
+  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, pattern);
+}
+
+$('analyze').addEventListener('click', () => {
+  const { panels } = groupByFilename(items, (it) => it.name);
+  verdicts.clear();
+
+  const started = performance.now();
+  let skipped = 0;
+
+  for (const panel of panels) {
+    const present = PATTERNS.map((p) => panel.images[p]).filter((it): it is Item => it !== undefined);
+
+    // An unlit image has no circle to detect, which is exactly the image where
+    // 미점등 must be found. Borrow geometry from a sibling pattern of the same
+    // panel: it is the same physical capture, so the circle is the same.
+    const reference = present.find((it) => it.detect.ok);
+    if (!reference) {
+      skipped += present.length;
+      continue;
+    }
+
+    const images: ImageDetection[] = [];
+    for (const pattern of PATTERNS) {
+      const item = panel.images[pattern];
+      if (!item) continue;
+      const geometry = item.detect.ok ? item : reference;
+      images.push(analyzeItem(item, pattern, geometry.circle, geometry.rotationDeg));
+    }
+    if (images.length > 0) verdicts.set(panelKey(panel.lotId, panel.panelCode), judgePanel(images));
+  }
+  const elapsed = performance.now() - started;
+
+  const note = `${verdicts.size}개 패널 분석 완료 · ${elapsed.toFixed(0)}ms`;
+  analyzeNote.textContent = skipped > 0 ? `${note} · 원 검출 실패로 ${skipped}장 제외` : note;
+  render();
+});
+
 // ---------------------------------------------------------------- rendering
 
 function render(): void {
   const { panels, unparsed } = groupByFilename(items, (it) => it.name);
   renderSummary(panels.length, unparsed.length);
+
+  toolbar.hidden = items.length === 0;
+  const unconfirmed = items.filter((it) => it.detect.ok && !it.confirmed).length;
+  if (unconfirmed > 0 && verdicts.size === 0) {
+    analyzeNote.textContent = `회전각 미확정 ${unconfirmed}건 — 자동 추정값으로 분석됩니다.`;
+  }
 
   panelsEl.replaceChildren();
   for (const panel of panels) panelsEl.append(renderPanel(panel));
@@ -193,7 +338,38 @@ function renderPanel(panel: PanelGroup<Item>): HTMLElement {
     if (item) tiles.append(renderTile(item, pattern));
   }
   el.append(tiles);
+
+  const verdict = verdicts.get(panelKey(panel.lotId, panel.panelCode));
+  if (verdict) el.append(renderVerdict(verdict));
   return el;
+}
+
+function renderVerdict(verdict: PanelVerdict): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'verdict';
+
+  const line = document.createElement('div');
+  line.className = 'verdict-line';
+
+  const good = verdict.finalJudgementId === DEFECT.GOOD;
+  const judgement = document.createElement('span');
+  judgement.className = `judgement ${good ? 'good' : 'bad'}`;
+  judgement.textContent = DEFECT_NAME[verdict.finalJudgementId];
+  line.append(judgement);
+
+  if (!good) {
+    for (const id of verdict.detectedDefectIds) line.append(badge(DEFECT_NAME[id], 'warn'));
+  }
+  line.append(badge(`신뢰도 ${verdict.confidence.toFixed(2)}`, verdict.confidence < 0.6 ? 'warn' : 'ok'));
+  if (verdict.suppressed.length > 0) line.append(badge(`검수 필요 · 단일 패턴 검출`, 'danger'));
+  if (verdict.drivingFlag) line.append(badge('구동불량 의심', 'danger'));
+  box.append(line);
+
+  const reason = document.createElement('p');
+  reason.className = 'reason';
+  reason.textContent = verdict.decisionReason;
+  box.append(reason);
+  return box;
 }
 
 function renderUnparsed(unparsed: Item[]): HTMLElement {
@@ -333,13 +509,32 @@ function redrawDetail(): void {
   const frame = normalizeFrame(item.rgba, item.circle, item.rotationDeg);
   paintRgba(frameCanvas, frame.image);
   const frameCtx = frameCanvas.getContext('2d');
-  if (frameCtx) drawFrameOverlay(frameCtx);
+  if (frameCtx) {
+    drawFrameOverlay(frameCtx);
+    const marks = detectionsFor(item);
+    if (marks.length > 0) drawDetections(frameCtx, marks);
+  }
+}
+
+/** Detections belonging to this image, from the panel verdict if one exists. */
+function detectionsFor(item: Item): { x: number; y: number; bbox: readonly [number, number, number, number]; counted: boolean }[] {
+  const { panels } = groupByFilename(items, (it) => it.name);
+  for (const panel of panels) {
+    for (const pattern of PATTERNS) {
+      if (panel.images[pattern] !== item) continue;
+      const verdict = verdicts.get(panelKey(panel.lotId, panel.panelCode));
+      if (!verdict) return [];
+      return verdict.labeled.filter((l) => l.pattern === pattern);
+    }
+  }
+  return [];
 }
 
 rotationInput.addEventListener('input', () => {
   if (!selected) return;
   selected.rotationDeg = normalizeAngle(Number(rotationInput.value));
   selected.rotationSource = 'manual';
+  invalidateVerdicts();
   redrawDetail();
 });
 
@@ -347,6 +542,7 @@ for (const input of [cxInput, cyInput, crInput]) {
   input.addEventListener('input', () => {
     if (!selected) return;
     selected.circle = { cx: Number(cxInput.value), cy: Number(cyInput.value), r: Math.max(1, Number(crInput.value)) };
+    invalidateVerdicts();
     redrawDetail();
   });
 }
@@ -356,6 +552,7 @@ $('reset-rotation').addEventListener('click', () => {
   selected.rotationDeg = selected.detect.fpcb.rotationDeg;
   selected.rotationSource = 'auto';
   rotationInput.value = String(selected.rotationDeg);
+  invalidateVerdicts();
   redrawDetail();
 });
 
@@ -374,6 +571,7 @@ $('apply-panel').addEventListener('click', () => {
       sibling.rotationSource = 'manual';
     }
   }
+  invalidateVerdicts();
   render();
 });
 

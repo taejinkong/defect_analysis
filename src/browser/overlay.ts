@@ -61,6 +61,28 @@ export function drawSourceOverlay(
   ctx.restore();
 }
 
+/** Mark detected defects on the normalized frame. Suppressed ones are dashed. */
+export function drawDetections(
+  ctx: CanvasRenderingContext2D,
+  detections: readonly {
+    x: number;
+    y: number;
+    bbox: readonly [number, number, number, number];
+    counted: boolean;
+  }[],
+): void {
+  ctx.save();
+  for (const d of detections) {
+    const [minX, minY, maxX, maxY] = d.bbox;
+    const pad = 5;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = d.counted ? '#ff5c8a' : 'rgba(255, 180, 84, 0.85)';
+    ctx.setLineDash(d.counted ? [] : [5, 4]);
+    ctx.strokeRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2);
+  }
+  ctx.restore();
+}
+
 /**
  * Draw clock ticks on the normalized frame. FPCB must sit at 6 o'clock; the
  * marker there is what the user checks before confirming.

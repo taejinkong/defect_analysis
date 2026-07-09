@@ -166,6 +166,47 @@ code {
   color: var(--warn);
 }
 
+.toolbar {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.toolbar-note {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.verdict {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.verdict-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.judgement {
+  font-size: 16px;
+  font-weight: 700;
+}
+.judgement.good {
+  color: var(--accent);
+}
+.judgement.bad {
+  color: var(--danger);
+}
+.reason {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.5;
+}
+
 .panels {
   margin-top: 24px;
   display: flex;

@@ -37,11 +37,16 @@ export const DEFAULT_SYNTHETIC: SyntheticOptions = {
   seed: 1,
 };
 
+/**
+ * Lit levels sit well below 255 on purpose. A real capture is exposed so the
+ * panel does not clip; if it did, a bright defect would have no headroom to
+ * stand out in and could never be detected.
+ */
 const CHANNEL_LEVELS: Record<Pattern, [number, number, number]> = {
-  R: [232, 16, 16],
-  G: [16, 232, 16],
-  B: [16, 16, 232],
-  W: [230, 230, 230],
+  R: [190, 14, 14],
+  G: [14, 190, 14],
+  B: [14, 14, 190],
+  W: [200, 200, 200],
 };
 
 /** Deterministic PRNG so tests do not flake on noise. */
@@ -117,6 +122,52 @@ export function addDarkDot(img: Rgba, x: number, y: number, radius: number, leve
 /** Draw a filled bright dot into an already-rendered panel. */
 export function addBrightDot(img: Rgba, x: number, y: number, radius: number, level = 255): void {
   stamp(img, x, y, radius, () => level);
+}
+
+/**
+ * Draw a straight line of the given thickness, in source coordinates.
+ * `angleDeg` is measured from +x, so 0 is horizontal and 90 is vertical.
+ */
+export function addLine(
+  img: Rgba,
+  x: number,
+  y: number,
+  length: number,
+  thickness: number,
+  angleDeg: number,
+  level: number,
+): void {
+  const rad = (angleDeg * Math.PI) / 180;
+  const ux = Math.cos(rad);
+  const uy = Math.sin(rad);
+  const half = length / 2;
+  const steps = Math.ceil(length * 2);
+
+  for (let s = 0; s <= steps; s++) {
+    const t = -half + (length * s) / steps;
+    stamp(img, x + ux * t, y + uy * t, thickness / 2, () => level);
+  }
+}
+
+/** Fill the whole active circle with a uniform level, simulating no-display. */
+export function blankPanel(img: Rgba, cx: number, cy: number, r: number, level: number): void {
+  stamp(img, cx, cy, r, () => level);
+}
+
+/** Overlay horizontal banding, the visual signature of a driving defect. */
+export function addBanding(img: Rgba, cx: number, cy: number, r: number, amplitude: number): void {
+  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+    if (y < 0 || y >= img.height) continue;
+    const delta = y % 2 === 0 ? amplitude : -amplitude;
+    for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+      if (x < 0 || x >= img.width) continue;
+      if (Math.hypot(x - cx, y - cy) > r) continue;
+      const i = (y * img.width + x) * 4;
+      img.data[i] += delta;
+      img.data[i + 1] += delta;
+      img.data[i + 2] += delta;
+    }
+  }
 }
 
 function stamp(img: Rgba, x: number, y: number, radius: number, valueAt: () => number): void {
