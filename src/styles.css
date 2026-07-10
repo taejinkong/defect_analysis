@@ -521,3 +521,115 @@ code {
   margin-top: 0;
   background: var(--surface-2);
 }
+
+/* ---------------------------------------------------------- metadata form */
+
+.meta-form {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 0 0 18px;
+}
+.meta-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: left;
+}
+.meta-form input,
+.meta-form select {
+  font: inherit;
+  font-size: 13px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 9px;
+  min-width: 120px;
+}
+
+button.small {
+  padding: 4px 11px;
+  font-size: 12px;
+}
+.spacer {
+  flex: 1;
+}
+.badge.info {
+  color: var(--axis);
+  border-color: rgba(122, 162, 255, 0.4);
+  background: rgba(122, 162, 255, 0.1);
+}
+.label-caption {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------- labeling */
+
+.labeling {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.label-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.label-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.label-controls select {
+  font: inherit;
+  font-size: 13px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 9px;
+}
+.label-hint {
+  color: var(--muted);
+  font-size: 12px;
+  padding-bottom: 7px;
+}
+canvas.labelable {
+  cursor: crosshair;
+  touch-action: none;
+}
+.label-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.label-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px 6px 12px;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.label-list li.label-empty {
+  justify-content: center;
+  color: var(--muted);
+  font-family: inherit;
+  background: transparent;
+  border-style: dashed;
+}

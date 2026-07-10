@@ -44,3 +44,17 @@ export function paintRgba(canvas: HTMLCanvasElement, img: Rgba): void {
   out.data.set(img.data);
   ctx.putImageData(out, 0, 0);
 }
+
+/**
+ * Encode raw pixels as a PNG blob for storage.
+ *
+ * PNG rather than JPEG: the detector works on residuals of a few gray levels,
+ * and JPEG's ringing around edges is the same magnitude as a real defect.
+ */
+export async function rgbaToBlob(img: Rgba): Promise<Blob> {
+  const canvas = document.createElement('canvas');
+  paintRgba(canvas, img);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('이미지를 PNG로 인코딩할 수 없습니다.');
+  return blob;
+}

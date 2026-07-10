@@ -292,6 +292,25 @@ export const DEFECT_NAME: Record<DefectId, string> = {
   D011: '복수불량',
 };
 
+/**
+ * Defects a person may place on an image.
+ *
+ * 양품 and 복수불량 are derived from the label set, never drawn, so they must not
+ * appear in the labeling picker. See docs/defect_taxonomy.md section 1.
+ */
+export const LABELABLE_DEFECTS: readonly DefectId[] = [
+  DEFECT.DARK_DOT_SMALL,
+  DEFECT.DARK_DOT_MEDIUM,
+  DEFECT.DARK_DOT_LARGE,
+  DEFECT.BRIGHT_DOT,
+  DEFECT.BRIGHT_LINE_H,
+  DEFECT.BRIGHT_LINE_V,
+  DEFECT.DARK_LINE_H,
+  DEFECT.DARK_LINE_V,
+  DEFECT.DRIVING,
+  DEFECT.NO_DISPLAY,
+];
+
 /** Higher wins when choosing a panel's primary defect. */
 export const DEFECT_SEVERITY: Record<DefectId, number> = {
   D000: 0,
