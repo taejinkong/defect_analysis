@@ -21,6 +21,8 @@ import { fileToRgba, paintRgba, rgbaToBlob } from './browser/decode';
 import { drawDetections, drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
 import { attachLabeling, drawAnnotations, drawPreview } from './browser/labeling';
 import { createSettingsPanel, loadSettings } from './browser/settingsPanel';
+import { renderDashboard } from './browser/dashboardView';
+import type { DashboardPanel, DashboardPoint } from './core/dashboard';
 
 // ---------------------------------------------------------------- state
 
@@ -469,6 +471,135 @@ $('analyze').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------- transfer
+
+// ---------------------------------------------------------------- dashboard
+
+/**
+ * Turn analyzed panels into the dashboard's input.
+ *
+ * The location points come from the Rule engine's confirmed detections
+ * (`labeled`, counted only), not the manual annotations: the dashboard reports
+ * what the AND analysis found across the batch. Manual labels drive training;
+ * analysis output drives the dashboard.
+ */
+function buildDashboardPanels(): DashboardPanel[] {
+  const out: DashboardPanel[] = [];
+  for (const panel of panels) {
+    const analysis = verdicts.get(panel.id);
+    if (!analysis) continue;
+    const points: DashboardPoint[] = analysis.rule.labeled
+      .filter((l) => l.counted)
+      .map((l) => ({
+        panelId: panel.id,
+        defectId: l.defectId,
+        pattern: l.pattern,
+        rRatio: l.rRatio,
+        angleDeg: l.angleDeg,
+        region: l.region,
+      }));
+    out.push({
+      panelId: panel.id,
+      lotId: panel.lotId,
+      model: panel.model,
+      processName: panel.processName,
+      equipmentId: panel.equipmentId,
+      reviewStatus: panel.reviewStatus,
+      finalJudgementId: analysis.fused.finalJudgementId,
+      detectedDefectIds: analysis.rule.detectedDefectIds,
+      confidence: analysis.fused.confidence,
+      needsReview: analysis.fused.needsReview,
+      points,
+    });
+  }
+  return out;
+}
+
+interface DashFilters {
+  lotId: string;
+  equipmentId: string;
+  processName: string;
+  approvedOnly: boolean;
+}
+const dashFilters: DashFilters = { lotId: '', equipmentId: '', processName: '', approvedOnly: false };
+
+function applyDashFilters(all: DashboardPanel[]): DashboardPanel[] {
+  return all.filter(
+    (p) =>
+      (!dashFilters.lotId || p.lotId === dashFilters.lotId) &&
+      (!dashFilters.equipmentId || p.equipmentId === dashFilters.equipmentId) &&
+      (!dashFilters.processName || p.processName === dashFilters.processName) &&
+      (!dashFilters.approvedOnly || p.reviewStatus === 'approved'),
+  );
+}
+
+function renderDashFilters(all: DashboardPanel[]): void {
+  const root = $('dash-filters');
+  root.replaceChildren();
+
+  const distinct = (field: 'lotId' | 'equipmentId' | 'processName'): string[] =>
+    [...new Set(all.map((p) => p[field]).filter(Boolean))].sort();
+
+  const addSelect = (label: string, key: 'lotId' | 'equipmentId' | 'processName'): void => {
+    const values = distinct(key);
+    if (values.length <= 1) return;
+    const wrap = document.createElement('label');
+    wrap.className = 'dash-filter';
+    wrap.textContent = label;
+    const sel = document.createElement('select');
+    sel.append(new Option('전체', ''));
+    for (const v of values) sel.append(new Option(v, v));
+    sel.value = dashFilters[key];
+    sel.addEventListener('change', () => {
+      dashFilters[key] = sel.value;
+      refreshDashboard();
+    });
+    wrap.append(sel);
+    root.append(wrap);
+  };
+
+  addSelect('Lot', 'lotId');
+  addSelect('설비', 'equipmentId');
+  addSelect('공정', 'processName');
+
+  const approved = document.createElement('label');
+  approved.className = 'dash-filter dash-check';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = dashFilters.approvedOnly;
+  cb.addEventListener('change', () => {
+    dashFilters.approvedOnly = cb.checked;
+    refreshDashboard();
+  });
+  approved.append(cb, document.createTextNode('검수 완료만'));
+  root.append(approved);
+
+  const count = document.createElement('span');
+  count.className = 'dash-count';
+  count.textContent = `${applyDashFilters(all).length} / ${all.length} panels`;
+  root.append(count);
+}
+
+function refreshDashboard(): void {
+  const all = buildDashboardPanels();
+  renderDashFilters(all);
+  renderDashboard($('dashboard-body'), applyDashFilters(all), settings);
+}
+
+$('dashboard').addEventListener('click', () => {
+  if (verdicts.size === 0) {
+    alert('먼저 불량 분석을 실행하세요.');
+    return;
+  }
+  $('dashboard-view').hidden = false;
+  refreshDashboard();
+});
+
+$('dashboard-close').addEventListener('click', () => {
+  $('dashboard-view').hidden = true;
+});
+$('dashboard-view').addEventListener('click', (e) => {
+  if (e.target === $('dashboard-view')) $('dashboard-view').hidden = true;
+});
 
 $('export').addEventListener('click', () => {
   void (async () => {

@@ -53,6 +53,7 @@
 
       <div class="toolbar" id="toolbar" hidden>
         <button type="button" id="analyze">불량 분석 실행</button>
+        <button type="button" id="dashboard" class="ghost">대시보드</button>
         <button type="button" id="export" class="ghost">라벨 내보내기</button>
         <button type="button" id="import" class="ghost">라벨 가져오기</button>
         <button type="button" id="wipe" class="ghost">전체 삭제</button>
@@ -62,6 +63,19 @@
 
       <section id="panels" class="panels"></section>
     </main>
+
+    <div class="detail dash-modal" id="dashboard-view" hidden>
+      <div class="detail-inner dash-inner">
+        <header class="detail-head">
+          <div>
+            <h2>대시보드</h2>
+            <div class="dash-filters" id="dash-filters"></div>
+          </div>
+          <button type="button" id="dashboard-close" class="ghost">닫기</button>
+        </header>
+        <div id="dashboard-body"></div>
+      </div>
+    </div>
 
     <div class="detail" id="detail" hidden>
       <div class="detail-inner">
