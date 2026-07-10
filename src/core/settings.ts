@@ -20,6 +20,10 @@ export interface Settings {
   readonly 'region.mid_max_r': number;
   /** A dot/line must appear in at least this many of R/G/B/W to be believed. */
   readonly 'pattern.min_confirmations': number;
+  readonly 'knn.k': number;
+  readonly 'knn.min_similarity': number;
+  /** Below this many searchable training panels, kNN stays off and Rule decides alone. */
+  readonly 'knn.min_train_panels': number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -36,6 +40,9 @@ export const DEFAULT_SETTINGS: Settings = {
   'region.center_max_r': 0.35,
   'region.mid_max_r': 0.75,
   'pattern.min_confirmations': 2,
+  'knn.k': 5,
+  'knn.min_similarity': 0.75,
+  'knn.min_train_panels': 10,
 };
 
 export type SettingKey = keyof Settings;
@@ -200,6 +207,39 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     step: 0.01,
     precision: 2,
   },
+
+  {
+    key: 'knn.min_train_panels',
+    group: 'kNN 매칭',
+    label: 'kNN 활성 최소 학습 수',
+    hint: '승인된 학습 패널이 이 수 미만이면 kNN을 끄고 Rule 단독으로 판정합니다.',
+    min: 1,
+    max: 100,
+    step: 1,
+    precision: 0,
+    unit: '개',
+  },
+  {
+    key: 'knn.k',
+    group: 'kNN 매칭',
+    label: '이웃 수 (k)',
+    hint: '가장 비슷한 학습 패널 몇 개로 다수결할지.',
+    min: 1,
+    max: 25,
+    step: 1,
+    precision: 0,
+    unit: '개',
+  },
+  {
+    key: 'knn.min_similarity',
+    group: 'kNN 매칭',
+    label: '최소 유사도',
+    hint: '코사인 유사도가 이 값 이상인 이웃만 인정합니다. 낮추면 더 자주 매칭됩니다.',
+    min: 0.3,
+    max: 0.99,
+    step: 0.01,
+    precision: 2,
+  },
 ];
 
 export const SETTING_GROUPS: readonly string[] = [
@@ -208,6 +248,7 @@ export const SETTING_GROUPS: readonly string[] = [
   'Line 판정',
   '미점등',
   '위치 구분',
+  'kNN 매칭',
 ];
 
 const SPEC_BY_KEY = new Map(SETTING_SPECS.map((s) => [s.key, s]));

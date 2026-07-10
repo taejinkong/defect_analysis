@@ -168,11 +168,67 @@ describe('IndexedDbRepository', () => {
     const panelId = await repo.addPanel(panel());
     const imageId = await repo.addImage(image(panelId));
     await repo.addAnnotation(annotation(imageId));
+    await repo.putEmbedding(embedding(panelId));
     await repo.clear();
 
     expect(await repo.listPanels()).toHaveLength(0);
     expect(await repo.listImages()).toHaveLength(0);
     expect(await repo.listAnnotations()).toHaveLength(0);
+    expect(await repo.listEmbeddings()).toHaveLength(0);
+  });
+});
+
+function embedding(panelId: number) {
+  return {
+    panelId,
+    vector: new Float32Array([1, 0, 0]).buffer,
+    dim: 3,
+    labelDefectId: 'D004' as const,
+    isSearchable: true,
+    featureVersion: 'v1',
+    createdAt: '2026-07-09T00:00:00.000Z',
+  };
+}
+
+describe('embeddings', () => {
+  let repo: Repository;
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  it('stores and lists an embedding', async () => {
+    const panelId = await repo.addPanel(panel());
+    await repo.putEmbedding(embedding(panelId));
+    const [stored] = await repo.listEmbeddings();
+    expect(stored!.panelId).toBe(panelId);
+    expect(new Float32Array(stored!.vector)).toEqual(new Float32Array([1, 0, 0]));
+  });
+
+  it('replaces rather than accumulates per panel', async () => {
+    const panelId = await repo.addPanel(panel());
+    await repo.putEmbedding(embedding(panelId));
+    await repo.putEmbedding({ ...embedding(panelId), labelDefectId: 'D001' });
+    const rows = await repo.listEmbeddings();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.labelDefectId).toBe('D001');
+  });
+
+  it('deletes by panel', async () => {
+    const a = await repo.addPanel(panel({ panelCode: 'A' }));
+    const b = await repo.addPanel(panel({ panelCode: 'B' }));
+    await repo.putEmbedding(embedding(a));
+    await repo.putEmbedding(embedding(b));
+    await repo.deleteEmbeddingsByPanel(a);
+    const rows = await repo.listEmbeddings();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.panelId).toBe(b);
+  });
+
+  it('is removed when its panel is deleted', async () => {
+    const panelId = await repo.addPanel(panel());
+    await repo.putEmbedding(embedding(panelId));
+    await repo.deletePanel(panelId);
+    expect(await repo.listEmbeddings()).toHaveLength(0);
   });
 });
 

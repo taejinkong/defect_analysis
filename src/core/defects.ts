@@ -3,6 +3,7 @@ import { FRAME_CENTER, FRAME_RADIUS } from './types';
 import { createMask, toGray } from './image';
 import { fitBackgroundSurface, residual } from './background';
 import { blobPoints, findBlobs, minAreaRect, type Blob } from './blobs';
+import { extractImageFeature } from './features';
 import { angleFromOffset, regionFromRadius, type Region } from './geometry';
 import type { Settings } from './settings';
 import { DEFAULT_SETTINGS } from './settings';
@@ -40,6 +41,17 @@ export interface ImageDetection {
   readonly meanLuma: number;
   /** Weak signal only. Never enough on its own to call 구동불량. */
   readonly drivingFlag: boolean;
+  /** 91-D descriptor, present only when requested. See extractImageFeature. */
+  readonly feature?: Float32Array;
+}
+
+export interface DetectOptions {
+  /**
+   * Also compute the kNN feature vector. Off by default: the extra full-frame
+   * histogram pass is wasted work for the live tuning preview, which redraws
+   * many times a second and never uses the feature.
+   */
+  readonly withFeature?: boolean;
 }
 
 /**
@@ -55,6 +67,7 @@ export function detectDefects(
   activeAreaPx: number,
   pattern: Pattern,
   settings: Settings = DEFAULT_SETTINGS,
+  options: DetectOptions = {},
 ): ImageDetection {
   const gray = channelOf(frame, pattern);
 
@@ -84,31 +97,35 @@ export function detectDefects(
 
   const noDisplay = classifyNoDisplay(meanLuma, darkBlobs, activeAreaPx, settings);
 
-  // A blank panel has no meaningful internal structure; reporting a thousand
-  // "dark dots" inside an unlit display would be noise.
-  if (noDisplay !== 'none') {
-    return { pattern, detections: [], darkAreaPct: 0, noDisplay, meanLuma, drivingFlag: false };
-  }
-
   const detections: Detection[] = [];
   let darkDotAreaPx = 0;
 
-  for (const blob of darkBlobs) {
-    const d = classify(blob, frame.width, false, settings);
-    detections.push(d);
-    if (d.kind === 'dark-dot') darkDotAreaPx += blob.areaPx;
+  // A blank panel has no meaningful internal structure, so it produces no
+  // detections; but it still needs a feature vector so kNN can match one unlit
+  // panel to another.
+  if (noDisplay === 'none') {
+    for (const blob of darkBlobs) {
+      const d = classify(blob, frame.width, false, settings);
+      detections.push(d);
+      if (d.kind === 'dark-dot') darkDotAreaPx += blob.areaPx;
+    }
+    for (const blob of brightBlobs) {
+      detections.push(classify(blob, frame.width, true, settings));
+    }
   }
-  for (const blob of brightBlobs) {
-    detections.push(classify(blob, frame.width, true, settings));
-  }
+
+  const feature = options.withFeature
+    ? extractImageFeature(gray, activeMask, darkMask, brightMask, detections, activeAreaPx)
+    : undefined;
 
   return {
     pattern,
     detections,
-    darkAreaPct: activeAreaPx > 0 ? (darkDotAreaPx / activeAreaPx) * 100 : 0,
+    darkAreaPct: noDisplay === 'none' && activeAreaPx > 0 ? (darkDotAreaPx / activeAreaPx) * 100 : 0,
     noDisplay,
     meanLuma,
-    drivingFlag: detectDrivingSignals(gray, activeMask),
+    drivingFlag: noDisplay === 'none' && detectDrivingSignals(gray, activeMask),
+    ...(feature ? { feature } : {}),
   };
 }
 

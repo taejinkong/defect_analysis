@@ -1,7 +1,9 @@
 import type {
   AnnotationRecord,
+  EmbeddingRecord,
   ImageRecord,
   NewAnnotation,
+  NewEmbedding,
   NewImage,
   NewPanel,
   PanelRecord,
@@ -9,11 +11,12 @@ import type {
 } from './records';
 
 const DB_NAME = 'defect_analysis';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const PANELS = 'panels';
 const IMAGES = 'images';
 const ANNOTATIONS = 'annotations';
+const EMBEDDINGS = 'embeddings';
 
 /**
  * IndexedDB-backed repository.
@@ -74,6 +77,27 @@ export class IndexedDbRepository implements Repository {
     await this.run(ANNOTATIONS, 'readwrite', (store) => store.delete(id));
   }
 
+  /** One embedding per panel: replace any existing row rather than accumulate. */
+  async putEmbedding(embedding: NewEmbedding): Promise<number> {
+    const tx = this.db.transaction(EMBEDDINGS, 'readwrite');
+    const store = tx.objectStore(EMBEDDINGS);
+    const existing = await request<EmbeddingRecord[]>(store.index('panelId').getAll(embedding.panelId));
+    for (const row of existing) store.delete(row.id);
+    const key = await request<IDBValidKey>(store.add(embedding as object));
+    await done(tx);
+    return key as number;
+  }
+
+  listEmbeddings = (): Promise<EmbeddingRecord[]> => this.all<EmbeddingRecord>(EMBEDDINGS);
+
+  async deleteEmbeddingsByPanel(panelId: number): Promise<void> {
+    const tx = this.db.transaction(EMBEDDINGS, 'readwrite');
+    const store = tx.objectStore(EMBEDDINGS);
+    const rows = await request<EmbeddingRecord[]>(store.index('panelId').getAll(panelId));
+    for (const row of rows) store.delete(row.id);
+    await done(tx);
+  }
+
   /**
    * Remove a panel and everything hanging off it.
    *
@@ -81,7 +105,7 @@ export class IndexedDbRepository implements Repository {
    * annotations pointing at an image that no longer exists.
    */
   async deletePanel(id: number): Promise<void> {
-    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS], 'readwrite');
+    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS], 'readwrite');
     const images = await request<ImageRecord[]>(tx.objectStore(IMAGES).index('panelId').getAll(id));
     for (const image of images) {
       const annotations = await request<AnnotationRecord[]>(
@@ -90,13 +114,15 @@ export class IndexedDbRepository implements Repository {
       for (const annotation of annotations) tx.objectStore(ANNOTATIONS).delete(annotation.id);
       tx.objectStore(IMAGES).delete(image.id);
     }
+    const embeddings = await request<EmbeddingRecord[]>(tx.objectStore(EMBEDDINGS).index('panelId').getAll(id));
+    for (const embedding of embeddings) tx.objectStore(EMBEDDINGS).delete(embedding.id);
     tx.objectStore(PANELS).delete(id);
     await done(tx);
   }
 
   async clear(): Promise<void> {
-    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS], 'readwrite');
-    for (const name of [PANELS, IMAGES, ANNOTATIONS]) tx.objectStore(name).clear();
+    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS], 'readwrite');
+    for (const name of [PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS]) tx.objectStore(name).clear();
     await done(tx);
   }
 
@@ -160,6 +186,14 @@ function upgrade(db: IDBDatabase): void {
     annotations.createIndex('imageId', 'imageId');
     annotations.createIndex('defectId', 'defectId');
     annotations.createIndex('reviewStatus', 'reviewStatus');
+  }
+  // Added in v2. createObjectStore inside onupgradeneeded runs for a v1 -> v2
+  // bump too, so existing databases gain the store without losing their data.
+  if (!db.objectStoreNames.contains(EMBEDDINGS)) {
+    // No index on isSearchable: IndexedDB cannot key on a boolean. The set of
+    // searchable panels is small, so listEmbeddings loads all and filters in JS.
+    const embeddings = db.createObjectStore(EMBEDDINGS, { keyPath: 'id', autoIncrement: true });
+    embeddings.createIndex('panelId', 'panelId');
   }
 }
 

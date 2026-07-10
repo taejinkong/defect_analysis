@@ -65,9 +65,24 @@ export interface AnnotationRecord {
   createdAt: string;
 }
 
+export interface EmbeddingRecord {
+  id: number;
+  panelId: number;
+  /** float32 L2-normalized descriptor, raw bytes. */
+  vector: ArrayBuffer;
+  dim: number;
+  /** The panel's representative label, the class this vector votes for. */
+  labelDefectId: DefectId;
+  /** Only approved training panels are searched. */
+  isSearchable: boolean;
+  featureVersion: string;
+  createdAt: string;
+}
+
 export type NewPanel = Omit<PanelRecord, 'id'>;
 export type NewImage = Omit<ImageRecord, 'id'>;
 export type NewAnnotation = Omit<AnnotationRecord, 'id'>;
+export type NewEmbedding = Omit<EmbeddingRecord, 'id'>;
 
 /**
  * Storage seam.
@@ -90,6 +105,10 @@ export interface Repository {
   updateAnnotation(id: number, patch: Partial<NewAnnotation>): Promise<void>;
   deleteAnnotation(id: number): Promise<void>;
   listAnnotations(imageId?: number): Promise<AnnotationRecord[]>;
+
+  putEmbedding(embedding: NewEmbedding): Promise<number>;
+  listEmbeddings(): Promise<EmbeddingRecord[]>;
+  deleteEmbeddingsByPanel(panelId: number): Promise<void>;
 
   clear(): Promise<void>;
 }

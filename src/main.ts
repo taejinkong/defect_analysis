@@ -9,6 +9,9 @@ import { formatClock, normalizeAngle } from './core/geometry';
 import { addBrightDot, addDarkDot, addLine, blankPanel, polarToSource, renderSyntheticPanel } from './core/synthetic';
 import { detectDefects, type ImageDetection } from './core/defects';
 import { judgePanel, type PanelVerdict } from './core/verdict';
+import { combinePanelFeature, fromBytes, toBytes, FEATURE_VERSION, PANEL_FEATURE_DIM } from './core/features';
+import { knnSearch, type SearchEntry } from './core/knn';
+import { fuseVerdict, type FusedVerdict } from './core/fusion';
 import { DEFECT, DEFECT_NAME, LABELABLE_DEFECTS, type DefectId, type Settings } from './core/settings';
 import type { AnnotationRecord, GeomType, ImageRecord, PanelRecord, Purpose, Repository } from './core/records';
 import { IndexedDbRepository } from './core/db';
@@ -28,7 +31,12 @@ let annotations: AnnotationRecord[] = [];
 
 /** Decoded pixels, keyed by image id. Blobs are decoded once and kept. */
 const pixels = new Map<number, Rgba>();
-const verdicts = new Map<number, PanelVerdict>();
+
+interface PanelAnalysis {
+  readonly rule: PanelVerdict;
+  readonly fused: FusedVerdict;
+}
+const verdicts = new Map<number, PanelAnalysis>();
 
 let settings: Settings = loadSettings();
 let verdictsStale = false;
@@ -381,42 +389,83 @@ function invalidateVerdicts(): void {
   lastRunNote = '';
 }
 
-function analyzeImage(image: ImageRecord, circle: Circle, rotationDeg: number): ImageDetection | null {
+function analyzeImage(
+  image: ImageRecord,
+  circle: Circle,
+  rotationDeg: number,
+  withFeature: boolean,
+): ImageDetection | null {
   const rgba = pixels.get(image.id);
   if (!rgba) return null;
   const frame = normalizeFrame(rgba, circle, rotationDeg);
-  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings);
+  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings, {
+    withFeature,
+  });
+}
+
+/**
+ * Detect every pattern of a panel once, returning both the per-image detections
+ * (for the Rule verdict) and the combined feature vector (for kNN). One pass, so
+ * the expensive background fit is not repeated.
+ */
+function analyzePanel(panelId: number): { detections: ImageDetection[]; feature: Float32Array | null; skipped: number } {
+  const panelImages = imagesOf(panelId);
+  // An unlit image has no circle of its own, which is exactly the image where
+  // 미점등 must be found. Borrow geometry from a sibling of the same capture.
+  const reference = panelImages.find((i) => i.detectOk && pixels.has(i.id));
+  if (!reference) return { detections: [], feature: null, skipped: panelImages.length };
+
+  const detections: ImageDetection[] = [];
+  const byPattern: Partial<Record<Pattern, Float32Array>> = {};
+  let skipped = 0;
+  for (const image of panelImages) {
+    const source = image.detectOk ? image : reference;
+    const detection = analyzeImage(image, circleOf(source), source.rotationDeg, true);
+    if (detection) {
+      detections.push(detection);
+      if (detection.feature) byPattern[image.pattern] = detection.feature;
+    } else {
+      skipped++;
+    }
+  }
+  const feature = detections.length > 0 ? combinePanelFeature(byPattern) : null;
+  return { detections, feature, skipped };
+}
+
+/** Approved training panels, loaded as kNN search candidates. */
+async function loadSearchCandidates(): Promise<SearchEntry[]> {
+  const embeddings = await repo.listEmbeddings();
+  return embeddings
+    .filter((e) => e.isSearchable && e.featureVersion === FEATURE_VERSION && e.dim === PANEL_FEATURE_DIM)
+    .map((e) => ({ panelId: e.panelId, labelDefectId: e.labelDefectId, vector: fromBytes(e.vector) }));
 }
 
 $('analyze').addEventListener('click', () => {
-  verdicts.clear();
-  const started = performance.now();
-  let skipped = 0;
+  void (async () => {
+    verdicts.clear();
+    const candidates = await loadSearchCandidates();
+    const started = performance.now();
+    let skipped = 0;
 
-  for (const panel of panels) {
-    const panelImages = imagesOf(panel.id);
-    // An unlit image has no circle of its own, which is exactly the image where
-    // 미점등 must be found. Borrow geometry from a sibling of the same capture.
-    const reference = panelImages.find((i) => i.detectOk && pixels.has(i.id));
-    if (!reference) {
-      skipped += panelImages.length;
-      continue;
+    for (const panel of panels) {
+      const { detections, feature, skipped: panelSkipped } = analyzePanel(panel.id);
+      skipped += panelSkipped;
+      if (detections.length === 0) continue;
+
+      const rule = judgePanel(detections, settings);
+      // A panel cannot match itself: exclude its own training embedding from the
+      // candidate set, or an already-approved panel would trivially vote for its
+      // own label at similarity 1.
+      const others = candidates.filter((c) => c.panelId !== panel.id);
+      const knn = feature ? knnSearch(feature, others, settings) : { status: 'insufficient-data' as const, candidateCount: others.length };
+      verdicts.set(panel.id, { rule, fused: fuseVerdict(rule, knn) });
     }
 
-    const detections: ImageDetection[] = [];
-    for (const image of panelImages) {
-      const source = image.detectOk ? image : reference;
-      const detection = analyzeImage(image, circleOf(source), source.rotationDeg);
-      if (detection) detections.push(detection);
-      else skipped++;
-    }
-    if (detections.length > 0) verdicts.set(panel.id, judgePanel(detections, settings));
-  }
-
-  verdictsStale = false;
-  lastRunNote = `${verdicts.size}개 패널 분석 완료 · ${(performance.now() - started).toFixed(0)}ms`;
-  if (skipped > 0) lastRunNote += ` · ${skipped}장 제외 (원 검출 실패 또는 이미지 없음)`;
-  render();
+    verdictsStale = false;
+    lastRunNote = `${verdicts.size}개 패널 분석 완료 · ${(performance.now() - started).toFixed(0)}ms · 학습 ${candidates.length}개`;
+    if (skipped > 0) lastRunNote += ` · ${skipped}장 제외 (원 검출 실패 또는 이미지 없음)`;
+    render();
+  })();
 });
 
 // ---------------------------------------------------------------- transfer
@@ -577,8 +626,8 @@ function renderPanel(panel: PanelRecord): HTMLElement {
   const labels = panelImages.flatMap((i) => annotationsOf(i.id));
   if (labels.length > 0) el.append(renderLabelSummary(labels));
 
-  const verdict = verdicts.get(panel.id);
-  if (verdict) el.append(renderVerdict(verdict));
+  const analysis = verdicts.get(panel.id);
+  if (analysis) el.append(renderVerdict(analysis));
   return el;
 }
 
@@ -604,10 +653,42 @@ function approveButton(panel: PanelRecord): HTMLElement {
           await repo.updateAnnotation(annotation.id, { reviewStatus: next });
         }
       }
+
+      if (next === 'approved') {
+        await storeEmbedding(panel.id);
+      } else {
+        // Unapproving pulls the panel out of the search set immediately.
+        await repo.deleteEmbeddingsByPanel(panel.id);
+      }
+      if (verdicts.size > 0) verdictsStale = true;
       await reload();
     })();
   });
   return btn;
+}
+
+/**
+ * Compute and store the panel's search embedding.
+ *
+ * The vote label comes from the reviewer's own manual labels, not from Rule
+ * detection: an approved panel is a human-verified example, and its hand-placed
+ * labels are the ground truth kNN should learn. A panel with no labels is a
+ * verified 양품 example, which is just as useful for confirming good panels.
+ */
+async function storeEmbedding(panelId: number): Promise<void> {
+  const { feature } = analyzePanel(panelId);
+  if (!feature) return; // no usable image; nothing to learn from
+
+  const labels = imagesOf(panelId).flatMap((i) => annotationsOf(i.id));
+  await repo.putEmbedding({
+    panelId,
+    vector: toBytes(feature),
+    dim: PANEL_FEATURE_DIM,
+    labelDefectId: judgeFromLabels(labels.map((l) => l.defectId)),
+    isSearchable: true,
+    featureVersion: FEATURE_VERSION,
+    createdAt: new Date().toISOString(),
+  });
 }
 
 function deleteButton(panel: PanelRecord): HTMLElement {
@@ -660,7 +741,8 @@ function badge(text: string, kind: 'ok' | 'warn' | 'danger' | 'info'): HTMLEleme
   return el;
 }
 
-function renderVerdict(verdict: PanelVerdict): HTMLElement {
+function renderVerdict(analysis: PanelAnalysis): HTMLElement {
+  const { rule, fused } = analysis;
   const box = document.createElement('div');
   box.className = 'verdict';
 
@@ -672,21 +754,23 @@ function renderVerdict(verdict: PanelVerdict): HTMLElement {
   caption.textContent = 'AI 판정';
   line.append(caption);
 
-  const good = verdict.finalJudgementId === DEFECT.GOOD;
+  const good = fused.finalJudgementId === DEFECT.GOOD;
   const judgement = document.createElement('span');
   judgement.className = `judgement ${good ? 'good' : 'bad'}`;
-  judgement.textContent = DEFECT_NAME[verdict.finalJudgementId];
+  judgement.textContent = DEFECT_NAME[fused.finalJudgementId];
   line.append(judgement);
 
-  if (!good) for (const id of verdict.detectedDefectIds) line.append(badge(DEFECT_NAME[id], 'warn'));
-  line.append(badge(`신뢰도 ${verdict.confidence.toFixed(2)}`, verdict.confidence < 0.6 ? 'warn' : 'ok'));
-  if (verdict.suppressed.length > 0) line.append(badge('검수 필요 · 단일 패턴 검출', 'danger'));
-  if (verdict.drivingFlag) line.append(badge('구동불량 의심', 'danger'));
+  if (!good) for (const id of rule.detectedDefectIds) line.append(badge(DEFECT_NAME[id], 'warn'));
+  line.append(badge(`신뢰도 ${fused.confidence.toFixed(2)}`, fused.confidence < 0.6 ? 'warn' : 'ok'));
+  if (fused.needsReview) line.append(badge('검수 필요', 'danger'));
+  if (rule.suppressed.length > 0) line.append(badge('단일 패턴 검출', 'warn'));
+  if (rule.drivingFlag) line.append(badge('구동불량 의심', 'warn'));
+  if (fused.neighbors.length > 0) line.append(badge(`kNN 이웃 ${fused.neighbors.length}`, 'info'));
   box.append(line);
 
   const reason = document.createElement('p');
   reason.className = 'reason';
-  reason.textContent = verdict.decisionReason;
+  reason.textContent = fused.decisionReason;
   box.append(reason);
   return box;
 }
@@ -908,8 +992,8 @@ function redrawDetail(): void {
   drawFrameOverlay(ctx);
 
   const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings);
-  const verdict = verdictsStale ? undefined : verdicts.get(image.panelId);
-  const suppressed = new Set(verdict?.suppressed ?? []);
+  const analysis = verdictsStale ? undefined : verdicts.get(image.panelId);
+  const suppressed = new Set(analysis?.rule.suppressed ?? []);
   drawDetections(
     ctx,
     detection.detections.map((d) => ({ x: d.x, y: d.y, bbox: d.bbox, counted: !suppressed.has(d.kind) })),
