@@ -637,6 +637,42 @@ importInput.addEventListener('change', () => {
   })();
 });
 
+$('approve-all').addEventListener('click', () => {
+  const pending = panels.filter((p) => p.reviewStatus !== 'approved');
+  if (pending.length === 0) {
+    alert('승인할 패널이 없습니다. 모든 패널이 이미 승인되었습니다.');
+    return;
+  }
+  if (
+    !confirm(
+      `${pending.length}개 패널을 일괄 승인합니다.\n\n` +
+        '승인된 패널은 kNN 학습 데이터가 됩니다. 라벨을 찍지 않은 패널은 양품 예제로 저장되므로, ' +
+        '학습 정확도가 중요하면 먼저 라벨링한 뒤 승인하세요.\n\n계속할까요?',
+    )
+  ) {
+    return;
+  }
+
+  const btn = $<HTMLButtonElement>('approve-all');
+  void (async () => {
+    // Storing an embedding runs a full detection pass per panel, so this can
+    // take a few seconds for a large batch. Show progress and lock the button.
+    btn.disabled = true;
+    const original = btn.textContent;
+    let done = 0;
+    for (const panel of pending) {
+      await setPanelApproval(panel, true);
+      done++;
+      btn.textContent = `승인 중… ${done}/${pending.length}`;
+    }
+    if (verdicts.size > 0) verdictsStale = true;
+    btn.textContent = original;
+    btn.disabled = false;
+    await reload();
+    alert(`${pending.length}개 패널을 승인했습니다.`);
+  })();
+});
+
 $('wipe').addEventListener('click', () => {
   if (!confirm('저장된 패널, 이미지, 라벨을 모두 삭제합니다. 되돌릴 수 없습니다. 계속할까요?')) return;
   void (async () => {
@@ -768,6 +804,25 @@ function spacer(): HTMLElement {
   return el;
 }
 
+/**
+ * Approve or un-approve one panel, in the DB only. Callers reload afterward.
+ *
+ * Approving a panel approves its labels and stores its search embedding — that
+ * is what "승인된 라벨만 학습 DB에 반영" in docs/PRD.md means in practice.
+ * Un-approving pulls it back out of the kNN search set.
+ */
+async function setPanelApproval(panel: PanelRecord, approved: boolean): Promise<void> {
+  const next = approved ? 'approved' : 'pending';
+  await repo.updatePanel(panel.id, { reviewStatus: next });
+  for (const image of imagesOf(panel.id)) {
+    for (const annotation of annotationsOf(image.id)) {
+      await repo.updateAnnotation(annotation.id, { reviewStatus: next });
+    }
+  }
+  if (approved) await storeEmbedding(panel.id);
+  else await repo.deleteEmbeddingsByPanel(panel.id);
+}
+
 function approveButton(panel: PanelRecord): HTMLElement {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -775,22 +830,7 @@ function approveButton(panel: PanelRecord): HTMLElement {
   btn.textContent = panel.reviewStatus === 'approved' ? '승인 취소' : '승인';
   btn.addEventListener('click', () => {
     void (async () => {
-      const next = panel.reviewStatus === 'approved' ? 'pending' : 'approved';
-      await repo.updatePanel(panel.id, { reviewStatus: next });
-      // Approving a panel approves its labels; that is what "승인된 라벨만
-      // 학습 DB에 반영" in docs/PRD.md means in practice.
-      for (const image of imagesOf(panel.id)) {
-        for (const annotation of annotationsOf(image.id)) {
-          await repo.updateAnnotation(annotation.id, { reviewStatus: next });
-        }
-      }
-
-      if (next === 'approved') {
-        await storeEmbedding(panel.id);
-      } else {
-        // Unapproving pulls the panel out of the search set immediately.
-        await repo.deleteEmbeddingsByPanel(panel.id);
-      }
+      await setPanelApproval(panel, panel.reviewStatus !== 'approved');
       if (verdicts.size > 0) verdictsStale = true;
       await reload();
     })();
