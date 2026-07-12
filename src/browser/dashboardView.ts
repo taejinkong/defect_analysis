@@ -12,7 +12,6 @@ import {
   locationLabel,
   overview,
   patternAnalysis,
-  polarDensity,
   regionMatrix,
   type DashboardPanel,
 } from '../core/dashboard';
@@ -269,7 +268,6 @@ function barChart(counts: ReadonlyMap<DefectId, number>): HTMLElement {
 // ---------------------------------------------------------------- location
 
 const SECTORS = 24;
-const RINGS = 6;
 
 function locationSection(
   panels: readonly DashboardPanel[],
@@ -301,40 +299,39 @@ function heatmapBody(points: readonly { rRatio: number; angleDeg: number }[]): H
   canvas.width = size;
   canvas.height = size;
   canvas.className = 'dash-polar';
-  const maxDensity = drawPolarHeatmap(canvas, points as { rRatio: number; angleDeg: number }[]);
+  const maxDensity = drawPolarBubbles(canvas, points as { rRatio: number; angleDeg: number }[]);
 
-  row.append(canvas, colorbar(0, maxDensity, '밀도'));
+  row.append(canvas, colorbar(0, maxDensity, '군집 밀도'));
   wrap.append(row);
-  wrap.append(caption('셀 면적으로 정규화된 밀도. 6시(FPCB)가 하단, 시계 방향으로 진행합니다.'));
+  wrap.append(caption('불량 하나가 버블 하나. 주변에 몰릴수록 크고 밝게(Viridis) 표시됩니다. 6시(FPCB)가 하단, 시계 방향으로 진행합니다.'));
   return wrap;
 }
 
-function drawPolarHeatmap(canvas: HTMLCanvasElement, points: { rRatio: number; angleDeg: number }[]): number {
+/**
+ * Bubble scatter over the circular display, in the style of the reference
+ * drug-discovery plot: each defect is a bubble at its (angle, radius) position,
+ * and its size and Viridis colour both encode local density — how many other
+ * defects sit within a small neighbourhood. Clustered defects therefore read as
+ * large bright bubbles, lone ones as small blue dots.
+ *
+ * Returns the maximum local density, for the colourbar's top tick.
+ */
+function drawPolarBubbles(canvas: HTMLCanvasElement, points: { rRatio: number; angleDeg: number }[]): number {
   const ctx = canvas.getContext('2d');
-  if (!ctx) return 0;
+  if (!ctx) return 1;
   const { width } = canvas;
   const cx = width / 2;
   const cy = width / 2;
   const R = width / 2 - 26;
 
-  const bins = polarDensity(points, SECTORS, RINGS);
-  const maxDensity = bins.reduce((m, b) => Math.max(m, b.density), 0) || 1;
-
   ctx.clearRect(0, 0, width, width);
-  for (const bin of bins) {
-    const rIn = (bin.ring / RINGS) * R;
-    const rOut = ((bin.ring + 1) / RINGS) * R;
-    const a0 = sectorToScreen(bin.sector);
-    const a1 = sectorToScreen(bin.sector + 1);
-    ctx.beginPath();
-    ctx.arc(cx, cy, rOut, a0, a1);
-    ctx.arc(cx, cy, rIn, a1, a0, true);
-    ctx.closePath();
-    ctx.fillStyle = bin.density > 0 ? viridis(bin.density / maxDensity) : '#eef1f6';
-    ctx.fill();
-  }
 
-  ctx.strokeStyle = 'rgba(80,100,140,0.35)';
+  // Display outline, clock spokes, and FPCB marker first, so bubbles sit on top.
+  ctx.fillStyle = '#f6f8fc';
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,100,140,0.30)';
   ctx.lineWidth = 1;
   for (let h = 0; h < 12; h += 3) {
     const { dx, dy } = offsetFromAngle(h * 30);
@@ -343,6 +340,45 @@ function drawPolarHeatmap(canvas: HTMLCanvasElement, points: { rRatio: number; a
     ctx.lineTo(cx + dx * R, cy + dy * R);
     ctx.stroke();
   }
+  ctx.strokeStyle = 'rgba(80,100,140,0.45)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Unit-circle coordinates (6 o'clock down), and local density per point.
+  const uv = points.map((p) => {
+    const rad = (p.angleDeg * Math.PI) / 180;
+    return { u: p.rRatio * -Math.sin(rad), v: p.rRatio * Math.cos(rad) };
+  });
+  const eps = 0.14;
+  const eps2 = eps * eps;
+  const density = uv.map((a) => {
+    let count = 0;
+    for (const b of uv) {
+      const dx = a.u - b.u;
+      const dy = a.v - b.v;
+      if (dx * dx + dy * dy <= eps2) count++;
+    }
+    return count;
+  });
+  const maxDensity = density.reduce((m, d) => Math.max(m, d), 1);
+
+  // Draw the largest bubbles first so dense bright clusters land on top.
+  const order = [...density.keys()].sort((i, j) => density[j]! - density[i]!);
+  for (const i of order) {
+    const t = density[i]! / maxDensity;
+    const r = 3.5 + t * 13;
+    const x = cx + uv[i]!.u * R;
+    const y = cy + uv[i]!.v * R;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = viridisRgba(t, 0.72);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.stroke();
+  }
+
   ctx.fillStyle = '#3b6fd4';
   ctx.font = '600 12px system-ui, sans-serif';
   ctx.textAlign = 'center';
@@ -639,20 +675,31 @@ const VIRIDIS: [number, [number, number, number]][] = [
   [1.0, [253, 231, 37]],
 ];
 
-function viridis(t: number): string {
+function viridisComponents(t: number): [number, number, number] {
   const x = Math.max(0, Math.min(1, t));
   for (let i = 1; i < VIRIDIS.length; i++) {
     const [t1, c1] = VIRIDIS[i]!;
     if (x <= t1) {
       const [t0, c0] = VIRIDIS[i - 1]!;
       const f = (x - t0) / (t1 - t0);
-      const r = Math.round(c0[0] + (c1[0] - c0[0]) * f);
-      const g = Math.round(c0[1] + (c1[1] - c0[1]) * f);
-      const b = Math.round(c0[2] + (c1[2] - c0[2]) * f);
-      return `rgb(${r},${g},${b})`;
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * f),
+        Math.round(c0[1] + (c1[1] - c0[1]) * f),
+        Math.round(c0[2] + (c1[2] - c0[2]) * f),
+      ];
     }
   }
-  return 'rgb(253,231,37)';
+  return [253, 231, 37];
+}
+
+function viridis(t: number): string {
+  const [r, g, b] = viridisComponents(t);
+  return `rgb(${r},${g},${b})`;
+}
+
+function viridisRgba(t: number, alpha: number): string {
+  const [r, g, b] = viridisComponents(t);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 // ---------------------------------------------------------------- helpers
