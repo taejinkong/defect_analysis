@@ -582,7 +582,7 @@ function renderDashFilters(all: DashboardPanel[]): void {
 function refreshDashboard(): void {
   const all = buildDashboardPanels();
   renderDashFilters(all);
-  renderDashboard($('dashboard-body'), applyDashFilters(all), settings);
+  renderDashboard($('dashboard-body'), $('dash-nav'), applyDashFilters(all), settings);
 }
 
 $('dashboard').addEventListener('click', () => {

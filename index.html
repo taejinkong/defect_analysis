@@ -65,16 +65,29 @@
       <section id="panels" class="panels"></section>
     </main>
 
-    <div class="detail dash-modal" id="dashboard-view" hidden>
-      <div class="detail-inner dash-inner">
-        <header class="detail-head">
-          <div>
-            <h2>대시보드</h2>
-            <div class="dash-filters" id="dash-filters"></div>
+    <div class="dash-modal" id="dashboard-view" hidden>
+      <div class="dash-shell">
+        <aside class="dash-sidebar">
+          <div class="dash-brand">
+            <span class="dash-brand-mark">◎</span>
+            <span>불량 분석</span>
           </div>
-          <button type="button" id="dashboard-close" class="ghost">닫기</button>
-        </header>
-        <div id="dashboard-body"></div>
+          <nav class="dash-nav" id="dash-nav"></nav>
+          <div class="dash-sidebar-foot">Watch Display<br />Defect Dashboard</div>
+        </aside>
+        <div class="dash-main">
+          <header class="dash-header">
+            <div>
+              <h2 class="dash-title">불량 분석 대시보드</h2>
+              <p class="dash-subtitle">분석 결과 요약 및 위치 상관 분석</p>
+            </div>
+            <div class="dash-header-right">
+              <div class="dash-filters" id="dash-filters"></div>
+              <button type="button" id="dashboard-close" class="dash-close">닫기</button>
+            </div>
+          </header>
+          <div id="dashboard-body"></div>
+        </div>
       </div>
     </div>
 
