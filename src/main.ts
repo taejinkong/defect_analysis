@@ -743,7 +743,7 @@ function renderSummary(): void {
     stat(`${training}/${panels.length}`, '학습용 패널'),
     stat(String(annotations.length), '수동 라벨'),
     stat(`${approved}/${panels.length}`, '승인됨', approved < panels.length),
-    stat(`${confirmed}/${images.length}`, '회전각 확정', confirmed < images.length),
+    stat(`${confirmed}/${images.length}`, 'FPCB 위치확정', confirmed < images.length),
     stat(String(failed), '검출 실패', failed > 0),
   );
 }
@@ -776,7 +776,7 @@ function renderAnalyzeNote(): void {
   }
   const unconfirmed = images.filter((i) => i.detectOk && !i.confirmed).length;
   analyzeNote.textContent =
-    unconfirmed > 0 ? `회전각 미확정 ${unconfirmed}건 — 자동 추정값으로 분석됩니다.` : '';
+    unconfirmed > 0 ? `FPCB 위치 미확정 ${unconfirmed}건 — 자동 추정값으로 분석됩니다.` : '';
 }
 
 function renderPanel(panel: PanelRecord): HTMLElement {
@@ -801,7 +801,7 @@ function renderPanel(panel: PanelRecord): HTMLElement {
 
   const missing = PATTERNS.filter((p) => !imageOf(panel.id, p));
   if (missing.length) head.append(badge(`결손 ${missing.join(', ')}`, 'warn'));
-  if (panelImages.length > 0 && panelImages.every((i) => i.confirmed)) head.append(badge('회전각 확정', 'ok'));
+  if (panelImages.length > 0 && panelImages.every((i) => i.confirmed)) head.append(badge('FPCB 위치확정', 'ok'));
   if (panel.reviewStatus === 'approved') head.append(badge('승인됨', 'ok'));
   if (panelImages.length > 0 && !panelImages.some(hasPixels)) head.append(badge('이미지 없음', 'warn'));
 
