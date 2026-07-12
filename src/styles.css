@@ -1,15 +1,16 @@
 :root {
-  --bg: #10131a;
-  --surface: #171b25;
-  --surface-2: #1f2532;
-  --border: #2b3242;
-  --text: #e6e9ef;
-  --muted: #97a0b3;
-  --accent: #3ddc97;
-  --warn: #ffb454;
-  --danger: #ff6b6b;
-  --axis: #7aa2ff;
-  color-scheme: dark;
+  /* Light theme, matching the reference financial dashboard. */
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-2: #f0f3f9;
+  --border: #e5e9f2;
+  --text: #1b2536;
+  --muted: #6b7688;
+  --accent: #3b6fd4;
+  --warn: #d98a00;
+  --danger: #e0503a;
+  --axis: #3b6fd4;
+  color-scheme: light;
 }
 
 * {
@@ -82,7 +83,7 @@ main {
 }
 .dropzone.over {
   border-color: var(--accent);
-  background: rgba(61, 220, 151, 0.06);
+  background: rgba(59, 111, 212, 0.06);
 }
 .dz-title {
   margin: 0 0 6px;
@@ -112,14 +113,14 @@ button {
   border-radius: 8px;
   border: 1px solid transparent;
   background: var(--accent);
-  color: #08130d;
+  color: #ffffff;
   cursor: pointer;
 }
 button:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.06);
 }
 button.ghost {
-  background: transparent;
+  background: var(--surface);
   border-color: var(--border);
   color: var(--text);
 }
@@ -194,7 +195,7 @@ code {
   font-weight: 700;
 }
 .judgement.good {
-  color: var(--accent);
+  color: #16a34a;
 }
 .judgement.bad {
   color: var(--danger);
@@ -252,9 +253,9 @@ code {
   background: rgba(255, 107, 107, 0.1);
 }
 .badge.ok {
-  color: var(--accent);
-  border-color: rgba(61, 220, 151, 0.35);
-  background: rgba(61, 220, 151, 0.1);
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.35);
+  background: rgba(22, 163, 74, 0.1);
 }
 
 .tiles {
@@ -1273,4 +1274,169 @@ canvas.labelable {
   border-radius: 8px;
   text-align: center;
   background: var(--d-card);
+}
+
+/* ================================================================ */
+/* App shell — light theme + left sidebar (financial dashboard ref) */
+/* ================================================================ */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--text);
+  padding: 2px 8px 18px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.app-brand-mark {
+  color: var(--accent);
+  font-size: 19px;
+}
+.app-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.app-nav-group {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: uppercase;
+  padding: 14px 12px 6px;
+}
+.app-nav-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.app-nav-item:hover {
+  background: var(--bg);
+  color: var(--text);
+  filter: none;
+}
+.app-nav-item.on {
+  background: #eaf1fd;
+  color: var(--accent);
+  font-weight: 650;
+}
+.app-sidebar-foot {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 7px;
+}
+.app-privacy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #16a34a;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.app-subtitle {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.app-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: #eaf1fd;
+  border: 1px solid #d3e2fb;
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+
+/* main content fills the shell rather than centering in a narrow column */
+.app-main main {
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 26px 32px 48px;
+}
+
+/* KPI-style summary cards on the light theme */
+.stat {
+  box-shadow: 0 1px 2px rgba(20, 30, 50, 0.04);
+}
+.dropzone {
+  box-shadow: 0 1px 3px rgba(20, 30, 50, 0.04);
+}
+.panel {
+  box-shadow: 0 1px 3px rgba(20, 30, 50, 0.04);
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    flex-direction: column;
+  }
+  .app-sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .app-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .app-nav-group {
+    display: none;
+  }
+  .app-sidebar-foot {
+    display: none;
+  }
 }

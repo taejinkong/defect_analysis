@@ -75,6 +75,31 @@ const toolSelect = $<HTMLSelectElement>('label-tool');
 const labelList = $('label-list');
 const settingsMount = $('settings-mount');
 
+// ---------------------------------------------------------------- sidebar nav
+
+/** Left sidebar: scroll links, plus shortcuts that open the dashboard or settings. */
+for (const item of document.querySelectorAll<HTMLButtonElement>('.app-nav-item[data-scroll]')) {
+  item.addEventListener('click', () => {
+    const target = document.getElementById(item.dataset.scroll ?? '');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setActiveNav(item);
+  });
+}
+$('nav-dashboard').addEventListener('click', () => {
+  setActiveNav($('nav-dashboard'));
+  $('dashboard').click();
+});
+$('nav-settings').addEventListener('click', () => {
+  setActiveNav($('nav-settings'));
+  const details = settingsMount.querySelector('details');
+  if (details) details.open = true;
+  settingsMount.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+function setActiveNav(active: HTMLElement): void {
+  for (const n of document.querySelectorAll('.app-nav-item')) n.classList.toggle('on', n === active);
+}
+
 const imagesOf = (panelId: number): ImageRecord[] => images.filter((i) => i.panelId === panelId);
 const imageOf = (panelId: number, pattern: Pattern): ImageRecord | undefined =>
   images.find((i) => i.panelId === panelId && i.pattern === pattern);

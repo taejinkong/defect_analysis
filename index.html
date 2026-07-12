@@ -6,15 +6,37 @@
     <title>Watch Display 불량 분석</title>
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <h1>Watch Display 불량 분석</h1>
-        <p class="subtitle">전처리 · Rule 검출 · 라벨링</p>
-      </div>
-      <p class="privacy">이미지는 이 브라우저 안에서만 처리됩니다. 서버로 전송되지 않습니다.</p>
-    </header>
+    <div class="app-shell">
+      <aside class="app-sidebar">
+        <div class="app-brand">
+          <span class="app-brand-mark">◎</span>
+          <span>불량 분석</span>
+        </div>
+        <nav class="app-nav">
+          <div class="app-nav-group">분석</div>
+          <button type="button" class="app-nav-item" data-scroll="intake">이미지 등록</button>
+          <button type="button" class="app-nav-item" data-scroll="summary">분석 현황</button>
+          <button type="button" class="app-nav-item" data-scroll="panels">패널 목록</button>
+          <button type="button" class="app-nav-item" id="nav-dashboard">대시보드</button>
+          <div class="app-nav-group">설정</div>
+          <button type="button" class="app-nav-item" id="nav-settings">임계값 조절</button>
+        </nav>
+        <div class="app-sidebar-foot">
+          <span class="app-privacy-dot"></span>
+          이미지는 이 브라우저 안에서만 처리되며 서버로 전송되지 않습니다.
+        </div>
+      </aside>
 
-    <main>
+      <div class="app-main">
+        <header class="app-topbar">
+          <div>
+            <h1>Watch Display 불량 분석</h1>
+            <p class="app-subtitle">전처리 · Rule 검출 · 라벨링 · kNN 매칭</p>
+          </div>
+          <span class="app-badge">오프라인 · 로컬 전용</span>
+        </header>
+
+        <main>
       <section class="intake" id="intake">
         <div class="dropzone" id="dropzone">
           <p class="dz-title">점등 이미지를 여기에 끌어다 놓으세요</p>
@@ -63,7 +85,9 @@
       </div>
 
       <section id="panels" class="panels"></section>
-    </main>
+        </main>
+      </div>
+    </div>
 
     <div class="dash-modal" id="dashboard-view" hidden>
       <div class="dash-shell">
