@@ -886,17 +886,48 @@ canvas.labelable {
 .dash-brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  font-weight: 700;
-  font-size: 15px;
-  color: var(--d-text);
-  padding: 0 8px 18px;
-  border-bottom: 1px solid var(--d-border);
-  margin-bottom: 14px;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #1c3a5c 0%, #14293f 100%);
+  box-shadow: 0 2px 8px rgba(20, 41, 63, 0.22);
 }
 .dash-brand-mark {
-  color: var(--d-primary);
-  font-size: 18px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.dash-brand-mark svg {
+  width: 19px;
+  height: 19px;
+  display: block;
+  fill: var(--d-primary);
+}
+.dash-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+.dash-brand-text strong {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.dash-brand-sub {
+  color: #93aecb;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 1px;
 }
 .dash-nav {
   display: flex;
@@ -1297,20 +1328,53 @@ canvas.labelable {
   top: 0;
   height: 100vh;
 }
+/* Brand lockup styled after the reference Plotly/Dash Enterprise mark:
+   a light icon tile + name + secondary line, on a deep navy block. */
 .app-brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  font-weight: 700;
-  font-size: 16px;
-  color: var(--text);
-  padding: 2px 8px 18px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 14px;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #1c3a5c 0%, #14293f 100%);
+  box-shadow: 0 2px 8px rgba(20, 41, 63, 0.22);
 }
 .app-brand-mark {
-  color: var(--accent);
-  font-size: 19px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.app-brand-mark svg {
+  width: 19px;
+  height: 19px;
+  display: block;
+  fill: var(--accent);
+}
+.app-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+.app-brand-text strong {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.app-brand-sub {
+  color: #93aecb;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 1px;
 }
 .app-nav {
   display: flex;
