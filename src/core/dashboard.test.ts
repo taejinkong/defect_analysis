@@ -22,6 +22,7 @@ function point(overrides: Partial<DashboardPoint> = {}): DashboardPoint {
     rRatio: 0.5,
     angleDeg: 90,
     region: 'mid',
+    areaPx: 10,
     ...overrides,
   };
 }

@@ -13,6 +13,8 @@ export interface DashboardPoint {
   readonly rRatio: number;
   readonly angleDeg: number;
   readonly region: Region;
+  /** Detected area in pixels, in the 512-frame. Drives the bubble size. */
+  readonly areaPx: number;
 }
 
 /** A panel as the dashboard sees it: metadata plus its analysis outcome. */

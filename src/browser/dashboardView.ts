@@ -299,26 +299,32 @@ function heatmapBody(points: readonly { rRatio: number; angleDeg: number }[]): H
   canvas.width = size;
   canvas.height = size;
   canvas.className = 'dash-polar';
-  const maxDensity = drawPolarBubbles(canvas, points as { rRatio: number; angleDeg: number }[]);
+  const present = drawPolarBubbles(canvas, points as BubblePoint[]);
 
-  row.append(canvas, colorbar(0, maxDensity, '군집 밀도'));
+  row.append(canvas, defectLegend(present));
   wrap.append(row);
-  wrap.append(caption('불량 하나가 버블 하나. 주변에 몰릴수록 크고 밝게(Viridis) 표시됩니다. 6시(FPCB)가 하단, 시계 방향으로 진행합니다.'));
+  wrap.append(
+    caption('불량 하나가 버블 하나. 버블 크기는 불량 면적, 색은 불량 종류입니다. 6시(FPCB)가 하단, 시계 방향으로 진행합니다.'),
+  );
   return wrap;
+}
+
+interface BubblePoint {
+  rRatio: number;
+  angleDeg: number;
+  areaPx: number;
+  defectId: DefectId;
 }
 
 /**
  * Bubble scatter over the circular display, in the style of the reference
- * drug-discovery plot: each defect is a bubble at its (angle, radius) position,
- * and its size and Viridis colour both encode local density — how many other
- * defects sit within a small neighbourhood. Clustered defects therefore read as
- * large bright bubbles, lone ones as small blue dots.
- *
- * Returns the maximum local density, for the colourbar's top tick.
+ * drug-discovery plot: each defect is a bubble at its (angle, radius) position.
+ * Bubble area encodes the defect's pixel area, and colour encodes the defect
+ * class. Returns the set of defect ids drawn, for the categorical legend.
  */
-function drawPolarBubbles(canvas: HTMLCanvasElement, points: { rRatio: number; angleDeg: number }[]): number {
+function drawPolarBubbles(canvas: HTMLCanvasElement, points: BubblePoint[]): DefectId[] {
   const ctx = canvas.getContext('2d');
-  if (!ctx) return 1;
+  if (!ctx) return [];
   const { width } = canvas;
   const cx = width / 2;
   const cy = width / 2;
@@ -345,37 +351,26 @@ function drawPolarBubbles(canvas: HTMLCanvasElement, points: { rRatio: number; a
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Unit-circle coordinates (6 o'clock down), and local density per point.
-  const uv = points.map((p) => {
-    const rad = (p.angleDeg * Math.PI) / 180;
-    return { u: p.rRatio * -Math.sin(rad), v: p.rRatio * Math.cos(rad) };
-  });
-  const eps = 0.14;
-  const eps2 = eps * eps;
-  const density = uv.map((a) => {
-    let count = 0;
-    for (const b of uv) {
-      const dx = a.u - b.u;
-      const dy = a.v - b.v;
-      if (dx * dx + dy * dy <= eps2) count++;
-    }
-    return count;
-  });
-  const maxDensity = density.reduce((m, d) => Math.max(m, d), 1);
+  // Bubble radius scales with sqrt(area) so that bubble *area* tracks defect
+  // area, the way area-encoded scatter plots are meant to be read.
+  const maxArea = points.reduce((m, p) => Math.max(m, p.areaPx), 1);
+  const radiusOf = (areaPx: number): number => 3 + 14 * Math.sqrt(Math.max(0, areaPx) / maxArea);
 
-  // Draw the largest bubbles first so dense bright clusters land on top.
-  const order = [...density.keys()].sort((i, j) => density[j]! - density[i]!);
+  // Largest bubbles first, so small ones stay visible on top of big ones.
+  const order = [...points.keys()].sort((i, j) => points[j]!.areaPx - points[i]!.areaPx);
+  const present = new Set<DefectId>();
   for (const i of order) {
-    const t = density[i]! / maxDensity;
-    const r = 3.5 + t * 13;
-    const x = cx + uv[i]!.u * R;
-    const y = cy + uv[i]!.v * R;
+    const p = points[i]!;
+    present.add(p.defectId);
+    const rad = (p.angleDeg * Math.PI) / 180;
+    const x = cx + p.rRatio * -Math.sin(rad) * R;
+    const y = cy + p.rRatio * Math.cos(rad) * R;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = viridisRgba(t, 0.72);
+    ctx.arc(x, y, radiusOf(p.areaPx), 0, Math.PI * 2);
+    ctx.fillStyle = withAlpha(DEFECT_COLOR[p.defectId] ?? '#888', 0.72);
     ctx.fill();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.stroke();
   }
 
@@ -383,7 +378,35 @@ function drawPolarBubbles(canvas: HTMLCanvasElement, points: { rRatio: number; a
   ctx.font = '600 12px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('FPCB (6시)', cx, cy + R + 18);
-  return maxDensity;
+  return [...present];
+}
+
+/** Categorical legend: colour swatch + defect name for each class drawn. */
+function defectLegend(defectIds: readonly DefectId[]): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'dash-legend';
+  const title = document.createElement('div');
+  title.className = 'dash-legend-title';
+  title.textContent = '불량 종류';
+  el.append(title);
+
+  const sorted = [...defectIds].sort();
+  for (const id of sorted) {
+    const item = document.createElement('div');
+    item.className = 'dash-legend-item';
+    const sw = document.createElement('span');
+    sw.className = 'dash-legend-swatch';
+    sw.style.background = DEFECT_COLOR[id] ?? '#888';
+    const name = document.createElement('span');
+    name.textContent = DEFECT_NAME[id];
+    item.append(sw, name);
+    el.append(item);
+  }
+  const note = document.createElement('div');
+  note.className = 'dash-legend-note';
+  note.textContent = '버블 크기 = 면적';
+  el.append(note);
+  return el;
 }
 
 function sectorToScreen(sector: number): number {
@@ -697,8 +720,31 @@ function viridis(t: number): string {
   return `rgb(${r},${g},${b})`;
 }
 
-function viridisRgba(t: number, alpha: number): string {
-  const [r, g, b] = viridisComponents(t);
+/**
+ * Categorical colours for the defect classes, used by the bubble plot's legend
+ * and marks. Dark-dot grades share a blue ramp (小→大 deepening); the other
+ * classes get distinct hues.
+ */
+const DEFECT_COLOR: Record<string, string> = {
+  D000: '#16a34a', // 양품 (not plotted as a point)
+  D001: '#9ecae1', // 암점 小
+  D002: '#4292c6', // 암점 中
+  D003: '#08519c', // 암점 大
+  D004: '#f59e0b', // 명점
+  D005: '#41ab5d', // 명선_가로줄
+  D006: '#12a4a4', // 명선_세로줄
+  D007: '#8856a7', // 암선_가로줄
+  D008: '#e7298a', // 암선_세로줄
+  D009: '#a1622f', // 구동불량
+  D010: '#737b8c', // 미점등
+  D011: '#dc2626', // 복수불량 (derived)
+};
+
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
 }
 

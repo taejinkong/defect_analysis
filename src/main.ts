@@ -521,6 +521,7 @@ function buildDashboardPanels(): DashboardPanel[] {
         rRatio: l.rRatio,
         angleDeg: l.angleDeg,
         region: l.region,
+        areaPx: l.areaPx,
       }));
     out.push({
       panelId: panel.id,
