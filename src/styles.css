@@ -907,7 +907,7 @@ canvas.labelable {
   width: 19px;
   height: 19px;
   display: block;
-  fill: var(--d-primary);
+  color: var(--d-primary);
 }
 .dash-brand-text {
   display: flex;
@@ -1354,7 +1354,7 @@ canvas.labelable {
   width: 19px;
   height: 19px;
   display: block;
-  fill: var(--accent);
+  color: var(--accent);
 }
 .app-brand-text {
   display: flex;
