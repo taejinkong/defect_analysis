@@ -22,12 +22,12 @@
         </div>
         <nav class="app-nav">
           <div class="app-nav-group">분석</div>
-          <button type="button" class="app-nav-item" data-scroll="intake">이미지 등록</button>
-          <button type="button" class="app-nav-item" data-scroll="summary">분석 현황</button>
-          <button type="button" class="app-nav-item" data-scroll="panels">패널 목록</button>
-          <button type="button" class="app-nav-item" id="nav-dashboard">분석정리</button>
+          <button type="button" class="app-nav-item" data-view="intake">이미지 등록</button>
+          <button type="button" class="app-nav-item" data-view="status">분석 현황</button>
+          <button type="button" class="app-nav-item" data-view="panels">패널 목록</button>
+          <button type="button" class="app-nav-item" data-view="dashboard">분석정리</button>
           <div class="app-nav-group">설정</div>
-          <button type="button" class="app-nav-item" id="nav-settings">임계값 조절</button>
+          <button type="button" class="app-nav-item" data-view="settings">임계값 조절</button>
         </nav>
         <div class="app-sidebar-foot">
           <span class="app-privacy-dot"></span>
@@ -45,6 +45,8 @@
         </header>
 
         <main>
+      <!-- 기능별 화면: 사이드바 탭 하나가 화면 하나 (해시 라우팅 #/intake …) -->
+      <div class="view" id="view-intake">
       <section class="intake" id="intake">
         <div class="dropzone" id="dropzone">
           <p class="dz-title">점등 이미지를 여기에 끌어다 놓으세요</p>
@@ -76,11 +78,14 @@
           데이터는 브라우저에 저장되어 다시 열어도 유지됩니다.
         </p>
       </section>
+      </div>
 
-      <section id="summary" class="summary" hidden></section>
+      <div class="view" id="view-status" hidden>
+        <section id="summary" class="summary" hidden></section>
+        <p class="view-empty" id="status-empty">아직 등록된 패널이 없습니다. <strong>이미지 등록</strong> 탭에서 점등 이미지를 올리면 현황이 표시됩니다.</p>
+      </div>
 
-      <div id="settings-mount"></div>
-
+      <div class="view" id="view-panels" hidden>
       <div class="toolbar" id="toolbar" hidden>
         <button type="button" id="analyze">불량 분석 실행</button>
         <button type="button" id="approve-all" class="ghost">일괄 승인</button>
@@ -93,41 +98,34 @@
       </div>
 
       <section id="panels" class="panels"></section>
-        </main>
+      <p class="view-empty" id="panels-empty">패널이 없습니다. <strong>이미지 등록</strong> 탭에서 이미지를 올리거나 샘플을 생성하세요.</p>
       </div>
-    </div>
 
-    <div class="dash-modal" id="dashboard-view" hidden>
-      <div class="dash-shell">
-        <aside class="dash-sidebar">
-          <div class="dash-brand">
-            <span class="dash-brand-mark">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="10.5" cy="10.5" r="6.3" fill="none" stroke="currentColor" stroke-width="2.2" />
-                <line x1="15.4" y1="15.4" x2="21" y2="21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-              </svg>
-            </span>
-            <span class="dash-brand-text">
-              <strong>불량 분석</strong>
-              <span class="dash-brand-sub">Defect Dashboard</span>
-            </span>
+      <div class="view" id="view-dashboard" hidden>
+        <div class="dash-shell dash-embedded">
+          <aside class="dash-sidebar">
+            <nav class="dash-nav" id="dash-nav"></nav>
+            <div class="dash-sidebar-foot">Watch Display<br />Defect Dashboard</div>
+          </aside>
+          <div class="dash-main">
+            <header class="dash-header">
+              <div>
+                <h2 class="dash-title">불량 분석정리</h2>
+                <p class="dash-subtitle">분석 결과 요약 및 위치 상관 분석</p>
+              </div>
+              <div class="dash-header-right">
+                <div class="dash-filters" id="dash-filters"></div>
+              </div>
+            </header>
+            <div id="dashboard-body"></div>
           </div>
-          <nav class="dash-nav" id="dash-nav"></nav>
-          <div class="dash-sidebar-foot">Watch Display<br />Defect Dashboard</div>
-        </aside>
-        <div class="dash-main">
-          <header class="dash-header">
-            <div>
-              <h2 class="dash-title">불량 분석정리</h2>
-              <p class="dash-subtitle">분석 결과 요약 및 위치 상관 분석</p>
-            </div>
-            <div class="dash-header-right">
-              <div class="dash-filters" id="dash-filters"></div>
-              <button type="button" id="dashboard-close" class="dash-close">닫기</button>
-            </div>
-          </header>
-          <div id="dashboard-body"></div>
         </div>
+      </div>
+
+      <div class="view" id="view-settings" hidden>
+        <div id="settings-mount"></div>
+      </div>
+        </main>
       </div>
     </div>
 

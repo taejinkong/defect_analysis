@@ -840,16 +840,6 @@ canvas.labelable {
 /* Scoped under .dash-shell so the rest of the app stays dark.       */
 /* ================================================================ */
 
-.dash-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(10, 14, 22, 0.6);
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  z-index: 20;
-}
-
 .dash-shell {
   --d-bg: #f5f7fb;
   --d-card: #ffffff;
@@ -873,6 +863,17 @@ canvas.labelable {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
 }
 
+/* The dashboard used to be a modal; as a routed screen it fills the main
+   column, keeps internal sidebar scrolling via a bounded height, and swaps the
+   floating shadow for a flat card border. */
+.dash-embedded {
+  width: 100%;
+  height: calc(100vh - 170px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(20, 30, 50, 0.04);
+}
+
 /* ---- sidebar ---- */
 .dash-sidebar {
   width: 210px;
@@ -882,52 +883,6 @@ canvas.labelable {
   display: flex;
   flex-direction: column;
   padding: 20px 14px;
-}
-.dash-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  margin-bottom: 16px;
-  border-radius: 11px;
-  background: linear-gradient(135deg, #1c3a5c 0%, #14293f 100%);
-  box-shadow: 0 2px 8px rgba(20, 41, 63, 0.22);
-}
-.dash-brand-mark {
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  background: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-}
-.dash-brand-mark svg {
-  width: 19px;
-  height: 19px;
-  display: block;
-  color: var(--d-primary);
-}
-.dash-brand-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.15;
-  min-width: 0;
-}
-.dash-brand-text strong {
-  color: #ffffff;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-.dash-brand-sub {
-  color: #93aecb;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-top: 1px;
 }
 .dash-nav {
   display: flex;
@@ -996,21 +951,6 @@ canvas.labelable {
   gap: 12px;
   flex-wrap: wrap;
 }
-.dash-close {
-  background: var(--d-card);
-  border: 1px solid var(--d-border);
-  color: var(--d-text);
-  border-radius: 8px;
-  padding: 8px 16px;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-.dash-close:hover {
-  border-color: var(--d-faint);
-  filter: none;
-}
-
 /* filters restyled for light theme */
 .dash-shell .dash-filters {
   margin: 0;
@@ -1467,6 +1407,22 @@ canvas.labelable {
   width: 100%;
   margin: 0 auto;
   padding: 26px 32px 48px;
+}
+
+/* Routed screens: one .view per sidebar tab, only one visible at a time.
+   Kill the first child's top margin so every screen starts at the same line. */
+.view > :first-child {
+  margin-top: 0;
+}
+.view-empty {
+  margin: 0;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
 }
 
 /* KPI-style summary cards on the light theme */

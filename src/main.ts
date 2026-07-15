@@ -75,30 +75,45 @@ const toolSelect = $<HTMLSelectElement>('label-tool');
 const labelList = $('label-list');
 const settingsMount = $('settings-mount');
 
-// ---------------------------------------------------------------- sidebar nav
+// ---------------------------------------------------------------- routing
 
-/** Left sidebar: scroll links, plus shortcuts that open the dashboard or settings. */
-for (const item of document.querySelectorAll<HTMLButtonElement>('.app-nav-item[data-scroll]')) {
-  item.addEventListener('click', () => {
-    const target = document.getElementById(item.dataset.scroll ?? '');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    setActiveNav(item);
-  });
-}
-$('nav-dashboard').addEventListener('click', () => {
-  setActiveNav($('nav-dashboard'));
-  $('dashboard').click();
-});
-$('nav-settings').addEventListener('click', () => {
-  setActiveNav($('nav-settings'));
-  const details = settingsMount.querySelector('details');
-  if (details) details.open = true;
-  settingsMount.scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
+/**
+ * Hash-routed screens, one per sidebar tab (jejutrip 참고 앱과 같은 방식).
+ *
+ * Each functional area is its own full screen instead of a section on one long
+ * scrolling page, and the URL (#/panels …) survives reload and back/forward.
+ */
+const VIEWS = ['intake', 'status', 'panels', 'dashboard', 'settings'] as const;
+type View = (typeof VIEWS)[number];
 
-function setActiveNav(active: HTMLElement): void {
-  for (const n of document.querySelectorAll('.app-nav-item')) n.classList.toggle('on', n === active);
+function parseRoute(): View {
+  const token = location.hash.replace(/^#\/?/, '');
+  return (VIEWS as readonly string[]).includes(token) ? (token as View) : 'intake';
 }
+
+function showView(view: View): void {
+  for (const v of VIEWS) $(`view-${v}`).hidden = v !== view;
+  for (const n of document.querySelectorAll<HTMLButtonElement>('.app-nav-item[data-view]')) {
+    n.classList.toggle('on', n.dataset.view === view);
+  }
+  // The dashboard aggregates whatever verdicts exist right now, so rebuild it
+  // on every entry rather than caching a stale render.
+  if (view === 'dashboard') refreshDashboard();
+  if (view === 'settings') {
+    const details = settingsMount.querySelector('details');
+    if (details) details.open = true;
+  }
+}
+
+function navigate(view: View): void {
+  if (parseRoute() === view) showView(view);
+  else location.hash = `#/${view}`;
+}
+
+for (const item of document.querySelectorAll<HTMLButtonElement>('.app-nav-item[data-view]')) {
+  item.addEventListener('click', () => navigate(item.dataset.view as View));
+}
+window.addEventListener('hashchange', () => showView(parseRoute()));
 
 const imagesOf = (panelId: number): ImageRecord[] => images.filter((i) => i.panelId === panelId);
 const imageOf = (panelId: number, pattern: Pattern): ImageRecord | undefined =>
@@ -118,6 +133,10 @@ const settingsPanel = createSettingsPanel(settings, {
   onCommit: () => renderAnalyzeNote(),
 });
 settingsMount.append(settingsPanel.element);
+
+// Initial route, after the settings panel exists so a #/settings deep link
+// lands with the panel expanded.
+showView(parseRoute());
 
 /**
  * The tuning loop needs the sliders and the preview on screen together, but the
@@ -223,6 +242,8 @@ async function addFiles(files: File[]): Promise<void> {
   }
   invalidateVerdicts();
   await reload();
+  // The result lives on the panels screen now; land the user there.
+  navigate('panels');
 }
 
 /**
@@ -405,6 +426,7 @@ $('sample').addEventListener('click', () => {
     }
     invalidateVerdicts();
     await reload();
+    navigate('panels');
   })();
 });
 
@@ -616,15 +638,7 @@ $('dashboard').addEventListener('click', () => {
     alert('먼저 불량 분석을 실행하세요.');
     return;
   }
-  $('dashboard-view').hidden = false;
-  refreshDashboard();
-});
-
-$('dashboard-close').addEventListener('click', () => {
-  $('dashboard-view').hidden = true;
-});
-$('dashboard-view').addEventListener('click', (e) => {
-  if (e.target === $('dashboard-view')) $('dashboard-view').hidden = true;
+  navigate('dashboard');
 });
 
 $('export').addEventListener('click', () => {
@@ -714,6 +728,7 @@ $('wipe').addEventListener('click', () => {
 function render(): void {
   renderSummary();
   toolbar.hidden = panels.length === 0;
+  $('panels-empty').hidden = panels.length > 0;
   renderAnalyzeNote();
 
   panelsEl.replaceChildren();
@@ -727,6 +742,7 @@ function render(): void {
 }
 
 function renderSummary(): void {
+  $('status-empty').hidden = panels.length > 0;
   if (panels.length === 0) {
     summaryEl.hidden = true;
     return;
