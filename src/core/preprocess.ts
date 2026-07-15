@@ -2,7 +2,7 @@ import type { Circle, Rgba } from './types';
 import { boxBlur, toIntensity } from './image';
 import { otsuThreshold, thresholdMask } from './otsu';
 import { boundaryPoints, fillHoles, largestComponent } from './components';
-import { fitCircleRobust } from './circle';
+import { fitCircleRobust, refineCircleEdge } from './circle';
 import { estimateFpcb, type FpcbEstimate } from './fpcb';
 import { normalizeFrame, type NormalizedFrame } from './normalize';
 
@@ -81,12 +81,20 @@ export function detectActiveCircle(src: Rgba, opts: DetectOptions = DEFAULT_DETE
   }
 
   // Fill first: a dark defect inside the panel leaves a hole whose rim would
-  // otherwise be treated as boundary.
+  // otherwise be treated as boundary. Image-border pixels are excluded from the
+  // boundary: a cropped capture clips the circle at the crop rectangle, and
+  // those straight runs would drag the fit off the true rim.
   const solid = fillHoles(component.mask);
-  const fit = fitCircleRobust(boundaryPoints(solid));
-  if (!fit) {
+  const coarse = fitCircleRobust(boundaryPoints(solid, true));
+  if (!coarse) {
     return { ok: false, reason: 'fit-failed', message: '경계점이 부족하거나 일직선이라 원을 피팅할 수 없습니다.' };
   }
+
+  // The Otsu boundary sits wherever the halo crosses the threshold, so on real
+  // captures with bloom it overestimates the radius. Snap to the strongest
+  // radial intensity drop, which stays on the physical rim; fall back to the
+  // coarse fit when the gradient evidence is too thin (e.g. tight crops).
+  const fit = refineCircleEdge(blurred, coarse) ?? coarse;
 
   const circle: Circle = { cx: fit.cx, cy: fit.cy, r: fit.r };
 

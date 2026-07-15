@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { detectActiveCircle, preprocess } from './preprocess';
-import { polarToSource, renderSyntheticPanel } from './synthetic';
+import { addLine, polarToSource, renderSyntheticPanel } from './synthetic';
 import { addDarkDot } from './synthetic';
 import { angleDelta, angleFromOffset } from './geometry';
 import { normalizeFrame, sourceToFrame } from './normalize';
 import { FRAME_CENTER, FRAME_RADIUS, FRAME_SIZE } from './types';
 import { toGray } from './image';
 import { createRgba } from './image';
+import { detectDefects } from './defects';
+import { judgePanel } from './verdict';
+import { DEFECT } from './settings';
 
 describe('detectActiveCircle', () => {
   it('recovers the circle of a centered synthetic panel', () => {
@@ -92,6 +95,68 @@ describe('FPCB estimation', () => {
 
 const DEFAULT_BACKGROUND = 12;
 
+describe('real-capture robustness', () => {
+  it('stays on the physical rim despite strong bloom around the panel', () => {
+    // Real captures of a lit panel bleed light past the rim. Otsu alone lands
+    // inside the halo and inflates the radius by several pixels; the gradient
+    // refinement must snap back to the true edge.
+    const img = renderSyntheticPanel({ glow: 0.7, glowFalloffPx: 30 });
+    const result = detectActiveCircle(img);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Math.abs(result.circle.cx - 320)).toBeLessThan(2);
+    expect(Math.abs(result.circle.cy - 320)).toBeLessThan(2);
+    expect(Math.abs(result.circle.r - 240)).toBeLessThan(2);
+  });
+
+  it('recovers the circle when the crop clips one side', () => {
+    // cx - r = -20: the left edge of the circle is cut off by the crop.
+    const img = renderSyntheticPanel({ width: 620, height: 640, cx: 220, cy: 320, r: 240 });
+    const result = detectActiveCircle(img);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Math.abs(result.circle.cx - 220)).toBeLessThan(3);
+    expect(Math.abs(result.circle.cy - 320)).toBeLessThan(3);
+    expect(Math.abs(result.circle.r - 240)).toBeLessThan(3);
+  });
+
+  it('recovers the circle from a tight crop clipped on all four sides', () => {
+    // Only the four corner arcs of background remain; every straight border
+    // run must be ignored or the fit collapses toward the crop rectangle.
+    const img = renderSyntheticPanel({ width: 460, height: 460, cx: 230, cy: 230, r: 250, tabLevel: 12 });
+    const result = detectActiveCircle(img);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Math.abs(result.circle.cx - 230)).toBeLessThan(3);
+    expect(Math.abs(result.circle.cy - 230)).toBeLessThan(3);
+    expect(Math.abs(result.circle.r - 250)).toBeLessThan(4);
+  });
+
+  it('still calls a line defect a line, not 미점등, on a glowing cropped capture', () => {
+    // The reported field failure: a cropped real capture with a line defect
+    // was judged 미점등 because the mis-fit circle let background into the
+    // active mask. With an accurate rim the line must be detected.
+    const img = renderSyntheticPanel({ width: 620, height: 640, cx: 310, cy: 320, r: 250, glow: 0.6 });
+    addLine(img, 310 + 40, 320, 320, 4, 90, 6);
+
+    const { detect, frame } = preprocess(img);
+    expect(detect.ok).toBe(true);
+    expect(frame).not.toBeNull();
+    if (!frame) return;
+
+    const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, 'W');
+    expect(detection.noDisplay).toBe('none');
+    expect(detection.detections.some((d) => d.kind === 'dark-line-v')).toBe(true);
+
+    const verdict = judgePanel([detection]);
+    expect(verdict.finalJudgementId).not.toBe(DEFECT.NO_DISPLAY);
+    expect(verdict.detectedDefectIds).toContain(DEFECT.DARK_LINE_V);
+  });
+});
+
 describe('detection failures', () => {
   it('rejects an all-black image', () => {
     const img = createRgba(200, 200);
@@ -159,21 +224,31 @@ describe('normalizeFrame', () => {
     const gray = toGray(frame.image);
     // The frame crops at r = 256, so only the innermost sliver of the tab
     // survives. Sample just outside the rim, where background and tab differ.
+    // The tab is a ~22-degree-wide plateau, so a raw argmax lands anywhere the
+    // pixel noise favors; a brightness-weighted circular centroid of the
+    // above-half-max samples is stable.
     const probeRadius = FRAME_RADIUS + 3;
-    let bestAngle = 0;
-    let best = -1;
+    const values: number[] = [];
     for (let a = 0; a < 360; a += 2) {
       const rad = (a * Math.PI) / 180;
       const x = Math.round(FRAME_CENTER - Math.sin(rad) * probeRadius);
       const y = Math.round(FRAME_CENTER + Math.cos(rad) * probeRadius);
-      if (x < 0 || y < 0 || x >= FRAME_SIZE || y >= FRAME_SIZE) continue;
-      const v = gray.data[y * FRAME_SIZE + x];
-      if (v > best) {
-        best = v;
-        bestAngle = a;
-      }
+      values.push(gray.data[y * FRAME_SIZE + x]!);
     }
-    expect(angleDelta(bestAngle, 0)).toBeLessThan(6);
+    const sorted = [...values].sort((a, b) => a - b);
+    const baseline = sorted[sorted.length >> 1]!;
+    const peak = sorted[sorted.length - 1]!;
+    let sx = 0;
+    let sy = 0;
+    for (let k = 0; k < values.length; k++) {
+      const w = values[k]! - (baseline + peak) / 2;
+      if (w <= 0) continue;
+      const rad = (k * 2 * Math.PI) / 180;
+      sx += Math.cos(rad) * w;
+      sy += Math.sin(rad) * w;
+    }
+    const centroid = ((Math.atan2(sy, sx) * 180) / Math.PI + 360) % 360;
+    expect(angleDelta(centroid, 0)).toBeLessThan(6);
   });
 
   it('maps a known defect position to the expected polar coordinates', () => {

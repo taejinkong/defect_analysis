@@ -17,6 +17,13 @@ export interface SyntheticOptions {
   readonly tabLevel: number;
   readonly noise: number;
   readonly vignette: number;
+  /**
+   * Bloom just outside the rim, as a fraction of the lit level at the edge.
+   * Real captures of a lit panel always show some halo; 0 disables it.
+   */
+  readonly glow: number;
+  /** e-folding distance of the halo, in pixels. */
+  readonly glowFalloffPx: number;
   readonly seed: number;
 }
 
@@ -34,6 +41,8 @@ export const DEFAULT_SYNTHETIC: SyntheticOptions = {
   tabLevel: 96,
   noise: 4,
   vignette: 0.12,
+  glow: 0,
+  glowFalloffPx: 24,
   seed: 1,
 };
 
@@ -101,6 +110,14 @@ export function renderSyntheticPanel(overrides: Partial<SyntheticOptions> = {}):
         const aligned = dist > 0 && (dx * tabDir.dx + dy * tabDir.dy) / dist >= cosHalf;
         const level = inRing && aligned ? o.tabLevel : o.backgroundLevel;
         r = g = b = level;
+        if (o.glow > 0) {
+          // The halo carries the panel's own color and decays from the rim's
+          // (vignetted) brightness outward.
+          const fall = (1 - o.vignette) * o.glow * Math.exp(-(dist - o.r) / o.glowFalloffPx);
+          r += cr * fall;
+          g += cg * fall;
+          b += cb * fall;
+        }
       }
 
       const n = (rand() - 0.5) * 2 * o.noise;

@@ -106,8 +106,17 @@ export function fillHoles(mask: Mask): Mask {
   return out;
 }
 
-/** Points on the component's outer edge: set pixels with at least one unset 4-neighbor. */
-export function boundaryPoints(mask: Mask): Float64Array {
+/**
+ * Points on the component's outer edge: set pixels with at least one unset
+ * 4-neighbor.
+ *
+ * With `excludeImageBorder`, pixels that are "edge" only because they touch the
+ * image border are skipped. A cropped capture clips the circle at the crop
+ * rectangle, and those straight border runs are crop artifacts, not rim: they
+ * drag a circle fit toward the rectangle. The surviving arc segments still
+ * determine the true circle.
+ */
+export function boundaryPoints(mask: Mask, excludeImageBorder = false): Float64Array {
   const { width: w, height: h, data } = mask;
   const xs: number[] = [];
   const ys: number[] = [];
@@ -116,15 +125,14 @@ export function boundaryPoints(mask: Mask): Float64Array {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (data[i] === 0) continue;
+      const interiorEdge =
+        (x > 0 && data[i - 1] === 0) ||
+        (x < w - 1 && data[i + 1] === 0) ||
+        (y > 0 && data[i - w] === 0) ||
+        (y < h - 1 && data[i + w] === 0);
       const edge =
-        x === 0 ||
-        y === 0 ||
-        x === w - 1 ||
-        y === h - 1 ||
-        data[i - 1] === 0 ||
-        data[i + 1] === 0 ||
-        data[i - w] === 0 ||
-        data[i + w] === 0;
+        interiorEdge ||
+        (!excludeImageBorder && (x === 0 || y === 0 || x === w - 1 || y === h - 1));
       if (edge) {
         xs.push(x);
         ys.push(y);
