@@ -86,6 +86,10 @@
       </div>
 
       <div class="view" id="view-panels" hidden>
+      <div class="intake-tabs" role="tablist">
+        <button type="button" class="intake-tab on" data-panels-purpose="analysis" role="tab" id="panels-tab-analysis">분석용</button>
+        <button type="button" class="intake-tab" data-panels-purpose="training" role="tab" id="panels-tab-training">학습용</button>
+      </div>
       <div class="toolbar" id="toolbar" hidden>
         <button type="button" id="analyze">불량 분석 실행</button>
         <button type="button" id="approve-all" class="ghost">일괄 승인</button>
@@ -98,7 +102,7 @@
       </div>
 
       <section id="panels" class="panels"></section>
-      <p class="view-empty" id="panels-empty">패널이 없습니다. <strong>이미지 등록</strong> 탭에서 이미지를 올리거나 샘플을 생성하세요.</p>
+      <p class="view-empty" id="panels-empty"></p>
       </div>
 
       <div class="view" id="view-dashboard" hidden>

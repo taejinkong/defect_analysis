@@ -204,13 +204,13 @@ const PURPOSE_NOTES: Record<Purpose, string> = {
 };
 
 function renderIntakePurpose(): void {
-  for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab')) {
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab[data-purpose]')) {
     tab.classList.toggle('on', tab.dataset.purpose === intakePurpose);
   }
   $('intake-purpose-note').textContent = PURPOSE_NOTES[intakePurpose];
 }
 
-for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab')) {
+for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab[data-purpose]')) {
   tab.addEventListener('click', () => {
     intakePurpose = tab.dataset.purpose as Purpose;
     renderIntakePurpose();
@@ -268,8 +268,9 @@ async function addFiles(files: File[]): Promise<void> {
     }
   }
   invalidateVerdicts();
+  // Land on the panels screen, on the tab of what was just uploaded.
+  panelsPurpose = intakePurpose;
   await reload();
-  // The result lives on the panels screen now; land the user there.
   navigate('panels');
 }
 
@@ -452,6 +453,7 @@ $('sample').addEventListener('click', () => {
       await addImage(`SAMPLE_${code}_${pattern}.png`, rgba);
     }
     invalidateVerdicts();
+    panelsPurpose = intakePurpose;
     await reload();
     navigate('panels');
   })();
@@ -716,14 +718,17 @@ importInput.addEventListener('change', () => {
 });
 
 $('approve-all').addEventListener('click', () => {
-  const pending = panels.filter((p) => p.reviewStatus !== 'approved');
+  // Scoped to the visible tab: approving 분석용 must not silently push the
+  // training pool's pending panels through as well.
+  const tabName = panelsPurpose === 'training' ? '학습용' : '분석용';
+  const pending = panels.filter((p) => p.purpose === panelsPurpose && p.reviewStatus !== 'approved');
   if (pending.length === 0) {
-    alert('승인할 패널이 없습니다. 모든 패널이 이미 승인되었습니다.');
+    alert(`승인할 ${tabName} 패널이 없습니다. 현재 탭의 패널이 모두 승인되었습니다.`);
     return;
   }
   if (
     !confirm(
-      `${pending.length}개 패널을 일괄 승인합니다.\n\n` +
+      `${tabName} 패널 ${pending.length}개를 일괄 승인합니다.\n\n` +
         '승인된 패널은 kNN 학습 데이터가 됩니다. 라벨을 찍지 않은 패널은 양품 예제로 저장되므로, ' +
         '학습 정확도가 중요하면 먼저 라벨링한 뒤 승인하세요.\n\n계속할까요?',
     )
@@ -763,18 +768,42 @@ $('wipe').addEventListener('click', () => {
 
 // ---------------------------------------------------------------- rendering
 
+/** Which purpose the 패널 목록 tab is showing, mirroring the intake tabs. */
+let panelsPurpose: Purpose = 'analysis';
+
+for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab[data-panels-purpose]')) {
+  tab.addEventListener('click', () => {
+    panelsPurpose = tab.dataset.panelsPurpose as Purpose;
+    render();
+  });
+}
+
+const PANELS_EMPTY_NOTES: Record<Purpose, string> = {
+  analysis: '분석용 패널이 없습니다. 이미지 등록 탭의 분석용에서 이미지를 올리거나 샘플을 생성하세요.',
+  training: '학습용 패널이 없습니다. 이미지 등록 탭의 학습용에서 불량 예제를 올려 라벨링·승인하면 kNN 학습 데이터가 됩니다.',
+};
+
 function render(): void {
   renderSummary();
-  toolbar.hidden = panels.length === 0;
-  $('panels-empty').hidden = panels.length > 0;
   renderAnalyzeNote();
 
+  const shown = panels.filter((p) => p.purpose === panelsPurpose);
+  const trainingCount = panels.filter((p) => p.purpose === 'training').length;
+
+  $('panels-tab-analysis').textContent = `분석용 ${panels.length - trainingCount}`;
+  $('panels-tab-training').textContent = `학습용 ${trainingCount}`;
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab[data-panels-purpose]')) {
+    tab.classList.toggle('on', tab.dataset.panelsPurpose === panelsPurpose);
+  }
+
+  toolbar.hidden = shown.length === 0;
+  const emptyEl = $('panels-empty');
+  emptyEl.hidden = shown.length > 0;
+  emptyEl.textContent = PANELS_EMPTY_NOTES[panelsPurpose];
+
   panelsEl.replaceChildren();
-  const sorted = [...panels].sort(
-    (a, b) =>
-      a.purpose.localeCompare(b.purpose) ||
-      a.lotId.localeCompare(b.lotId) ||
-      a.panelCode.localeCompare(b.panelCode),
+  const sorted = [...shown].sort(
+    (a, b) => a.lotId.localeCompare(b.lotId) || a.panelCode.localeCompare(b.panelCode),
   );
   for (const panel of sorted) panelsEl.append(renderPanel(panel));
 }
