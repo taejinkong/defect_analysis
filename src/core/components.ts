@@ -106,7 +106,20 @@ export function fillHoles(mask: Mask): Mask {
   return out;
 }
 
-/** Points on the component's outer edge: set pixels with at least one unset 4-neighbor. */
+/**
+ * Points on the component's outer edge: set pixels with at least one unset
+ * 4-neighbor.
+ *
+ * A pixel that only touches the *image's* own border, with no unset neighbor
+ * on any side we can actually check, is not treated as boundary. A crop tight
+ * enough to clip the true circle leaves a straight run of foreground pixels
+ * along that edge; those pixels sit deep inside the true circle, not on its
+ * rim, so counting them as boundary would pull an unweighted circle fit
+ * toward a straight line instead of the true arc. Genuine rim points that
+ * happen to sit on the image border (e.g. a perfectly tight bounding-box
+ * crop) still have a real transition to background on their unclipped side
+ * and are kept.
+ */
 export function boundaryPoints(mask: Mask): Float64Array {
   const { width: w, height: h, data } = mask;
   const xs: number[] = [];
@@ -117,14 +130,10 @@ export function boundaryPoints(mask: Mask): Float64Array {
       const i = y * w + x;
       if (data[i] === 0) continue;
       const edge =
-        x === 0 ||
-        y === 0 ||
-        x === w - 1 ||
-        y === h - 1 ||
-        data[i - 1] === 0 ||
-        data[i + 1] === 0 ||
-        data[i - w] === 0 ||
-        data[i + w] === 0;
+        (x > 0 && data[i - 1] === 0) ||
+        (x < w - 1 && data[i + 1] === 0) ||
+        (y > 0 && data[i - w] === 0) ||
+        (y < h - 1 && data[i + w] === 0);
       if (edge) {
         xs.push(x);
         ys.push(y);
@@ -138,4 +147,38 @@ export function boundaryPoints(mask: Mask): Float64Array {
     pts[i * 2 + 1] = ys[i];
   }
   return pts;
+}
+
+/**
+ * True when the component touches the image border for more than a couple of
+ * pixels on any side — a sign the source was cropped tighter than the true
+ * silhouette, so part of its boundary is permanently invisible and the fitted
+ * circle can only ever be an approximation. A lone tangent pixel from an
+ * exact bounding-box crop does not count.
+ */
+export function touchesImageBorder(mask: Mask, minRun = 3): boolean {
+  const { width: w, height: h, data } = mask;
+
+  const longestRun = (length: number, at: (k: number) => number): number => {
+    let best = 0;
+    let run = 0;
+    for (let k = 0; k < length; k++) {
+      if (data[at(k)] === 1) {
+        run++;
+        if (run > best) best = run;
+      } else {
+        run = 0;
+      }
+    }
+    return best;
+  };
+
+  const runs = [
+    longestRun(w, (x) => x), // top row
+    longestRun(w, (x) => (h - 1) * w + x), // bottom row
+    longestRun(h, (y) => y * w), // left column
+    longestRun(h, (y) => y * w + w - 1), // right column
+  ];
+
+  return Math.max(...runs) >= minRun;
 }

@@ -24,6 +24,9 @@ import { createSettingsPanel, loadSettings } from './browser/settingsPanel';
 import { renderDashboard } from './browser/dashboardView';
 import type { DashboardPanel, DashboardPoint } from './core/dashboard';
 
+const CLIPPED_CROP_WARNING =
+  '이미지 경계에서 원이 잘렸습니다. 잘린 부분의 불량은 검출할 수 없으니 원 전체가 보이도록 다시 크롭해 주세요.';
+
 // ---------------------------------------------------------------- state
 
 let repo: Repository;
@@ -288,7 +291,7 @@ async function addImage(name: string, rgba: Rgba, source?: Blob): Promise<void> 
     rotationSource: 'auto',
     confirmed: false,
     detectOk: detect.ok,
-    detectMessage: detect.ok ? '' : detect.message,
+    detectMessage: detect.ok ? (detect.clipped ? CLIPPED_CROP_WARNING : '') : detect.message,
     fpcbStrength: detect.ok ? detect.fpcb.strength : 0,
   });
   pixels.set(imageId, rgba);
@@ -306,7 +309,7 @@ async function addImage(name: string, rgba: Rgba, source?: Blob): Promise<void> 
     rotationSource: 'auto',
     confirmed: false,
     detectOk: detect.ok,
-    detectMessage: detect.ok ? '' : detect.message,
+    detectMessage: detect.ok ? (detect.clipped ? CLIPPED_CROP_WARNING : '') : detect.message,
     fpcbStrength: detect.ok ? detect.fpcb.strength : 0,
   });
 }
@@ -1000,6 +1003,7 @@ function tileNote(image: ImageRecord): string {
   if (labels > 0) return `라벨 ${labels}개`;
   if (!pixels.has(image.id)) return '이미지 없음';
   if (!image.detectOk) return '검출 실패';
+  if (image.detectMessage) return '테두리 잘림';
   if (image.confirmed) return `확정 ${image.rotationDeg.toFixed(1)}°`;
   if (image.fpcbStrength < 3) return 'FPCB 불확실';
   return `추정 ${image.rotationDeg.toFixed(1)}°`;
@@ -1127,6 +1131,9 @@ function openDetail(image: ImageRecord): void {
   } else if (!image.detectOk) {
     status.classList.add('error');
     status.textContent = `검출 실패 — ${image.detectMessage}`;
+  } else if (image.detectMessage) {
+    status.classList.add('warn');
+    status.textContent = image.detectMessage;
   } else if (image.fpcbStrength < 3) {
     status.classList.add('warn');
     status.textContent = `FPCB 자동 추정이 불확실합니다 (신뢰도 ${image.fpcbStrength.toFixed(1)}σ). 회전각을 직접 맞춰 주세요.`;

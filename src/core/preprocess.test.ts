@@ -7,6 +7,24 @@ import { normalizeFrame, sourceToFrame } from './normalize';
 import { FRAME_CENTER, FRAME_RADIUS, FRAME_SIZE } from './types';
 import { toGray } from './image';
 import { createRgba } from './image';
+import type { Rgba } from './types';
+
+/** Simulate a user cropping `cutPx` columns off the left of a capture. */
+function cropLeft(img: Rgba, cutPx: number): Rgba {
+  const w = img.width - cutPx;
+  const out = createRgba(w, img.height);
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < w; x++) {
+      const src = (y * img.width + (x + cutPx)) * 4;
+      const dst = (y * w + x) * 4;
+      out.data[dst] = img.data[src]!;
+      out.data[dst + 1] = img.data[src + 1]!;
+      out.data[dst + 2] = img.data[src + 2]!;
+      out.data[dst + 3] = img.data[src + 3]!;
+    }
+  }
+  return out;
+}
 
 describe('detectActiveCircle', () => {
   it('recovers the circle of a centered synthetic panel', () => {
@@ -53,6 +71,46 @@ describe('detectActiveCircle', () => {
     // The dot punches a hole, but the boundary fit is driven by the outer rim.
     expect(result.circle.cx).toBeCloseTo(320, 0);
     expect(result.circle.r).toBeCloseTo(240, 0);
+  });
+});
+
+describe('detectActiveCircle with a crop that clips the circle', () => {
+  it('is not reported as clipped for a generous crop', () => {
+    const img = renderSyntheticPanel({ cx: 320, cy: 320, r: 240 });
+    const result = detectActiveCircle(img);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.clipped).toBe(false);
+  });
+
+  it('still recovers the true rim when the crop cuts into the circle', () => {
+    // True circle: cx=320, cy=320, r=240 -> left edge of circle sits at x=80.
+    const img = renderSyntheticPanel({ cx: 320, cy: 320, r: 240 });
+    // Crop 140px off the left: 60px inside the true circle, so a chord of the
+    // display is clipped off. In the cropped frame the true center is (180, 320).
+    const cropped = cropLeft(img, 140);
+
+    const result = detectActiveCircle(cropped);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Before the fix, the straight run of pixels the crop leaves along x=0 was
+    // treated as if it were on the rim, which pulled the fit off by several
+    // pixels (cx off by ~6px, r off by ~4px for this exact crop). The genuine
+    // arc on the other three sides should pin the fit tightly regardless.
+    expect(result.circle.cx).toBeCloseTo(180, 0);
+    expect(result.circle.r).toBeCloseTo(240, 0);
+    expect(result.clipped).toBe(true);
+  });
+
+  it('flags clipped even when the fit residual alone would look fine', () => {
+    const img = renderSyntheticPanel({ cx: 320, cy: 320, r: 240 });
+    const cropped = cropLeft(img, 100); // clips ~20px into the circle
+    const result = detectActiveCircle(cropped);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.clipped).toBe(true);
+    expect(result.rmsResidual).toBeLessThan(result.circle.r * 0.05);
   });
 });
 

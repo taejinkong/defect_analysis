@@ -1,7 +1,7 @@
 import type { Circle, Rgba } from './types';
 import { boxBlur, toIntensity } from './image';
 import { otsuThreshold, thresholdMask } from './otsu';
-import { boundaryPoints, fillHoles, largestComponent } from './components';
+import { boundaryPoints, fillHoles, largestComponent, touchesImageBorder } from './components';
 import { fitCircleRobust } from './circle';
 import { estimateFpcb, type FpcbEstimate } from './fpcb';
 import { normalizeFrame, type NormalizedFrame } from './normalize';
@@ -35,6 +35,15 @@ export interface DetectSuccess {
   readonly fpcb: FpcbEstimate;
   /** True when the FPCB estimate cleared `minFpcbStrength`. */
   readonly fpcbReliable: boolean;
+  /**
+   * True when the source image was cropped tighter than the active circle, so
+   * part of its true boundary — and possibly the display itself — falls
+   * outside the frame. The fit still uses only the visible arc and is not
+   * biased by the clip (see `boundaryPoints`), but any defect that fell in
+   * the missing area can never be recovered. The caller should warn the user
+   * to recrop with the whole circle visible.
+   */
+  readonly clipped: boolean;
 }
 
 export interface DetectError {
@@ -108,6 +117,7 @@ export function detectActiveCircle(src: Rgba, opts: DetectOptions = DEFAULT_DETE
     areaFraction,
     fpcb,
     fpcbReliable: fpcb.strength >= opts.minFpcbStrength,
+    clipped: touchesImageBorder(solid),
   };
 }
 
