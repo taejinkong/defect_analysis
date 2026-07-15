@@ -48,6 +48,11 @@
       <!-- 기능별 화면: 사이드바 탭 하나가 화면 하나 (해시 라우팅 #/intake …) -->
       <div class="view" id="view-intake">
       <section class="intake" id="intake">
+        <div class="intake-tabs" role="tablist">
+          <button type="button" class="intake-tab on" data-purpose="analysis" role="tab">분석용</button>
+          <button type="button" class="intake-tab" data-purpose="training" role="tab">학습용</button>
+        </div>
+        <p class="intake-purpose-note" id="intake-purpose-note"></p>
         <div class="dropzone" id="dropzone">
           <p class="dz-title">점등 이미지를 여기에 끌어다 놓으세요</p>
           <p class="dz-hint">
@@ -55,12 +60,6 @@
           </p>
 
           <div class="meta-form">
-            <label>용도
-              <select id="meta-purpose">
-                <option value="training">학습용</option>
-                <option value="analysis" selected>분석용</option>
-              </select>
-            </label>
             <label>Model <input type="text" id="meta-model" placeholder="선택" /></label>
             <label>Process <input type="text" id="meta-process" placeholder="선택" /></label>
             <label>Equipment <input type="text" id="meta-equipment" placeholder="선택" /></label>
@@ -82,7 +81,8 @@
 
       <div class="view" id="view-status" hidden>
         <section id="summary" class="summary" hidden></section>
-        <p class="view-empty" id="status-empty">아직 등록된 패널이 없습니다. <strong>이미지 등록</strong> 탭에서 점등 이미지를 올리면 현황이 표시됩니다.</p>
+        <p class="status-note" id="status-note" hidden>분석용 패널 기준입니다. 학습용 패널은 집계에서 제외되며 패널 목록에서 확인할 수 있습니다.</p>
+        <p class="view-empty" id="status-empty">아직 등록된 분석용 패널이 없습니다. <strong>이미지 등록</strong> 탭의 <strong>분석용</strong>에서 점등 이미지를 올리면 현황이 표시됩니다.</p>
       </div>
 
       <div class="view" id="view-panels" hidden>

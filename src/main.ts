@@ -191,6 +191,33 @@ void (async () => {
 
 // ---------------------------------------------------------------- intake
 
+/**
+ * 학습용/분석용 upload tabs. The choice tags every panel created from the
+ * current upload; training panels feed only the kNN candidate pool and never
+ * appear in 분석 현황 or 분석정리.
+ */
+let intakePurpose: Purpose = 'analysis';
+
+const PURPOSE_NOTES: Record<Purpose, string> = {
+  analysis: '분석용 — 불량 분석 결과가 분석 현황과 분석정리에 집계됩니다.',
+  training: '학습용 — 라벨링 후 승인하면 kNN 학습 데이터가 됩니다. 분석 현황·분석정리에는 포함되지 않습니다.',
+};
+
+function renderIntakePurpose(): void {
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab')) {
+    tab.classList.toggle('on', tab.dataset.purpose === intakePurpose);
+  }
+  $('intake-purpose-note').textContent = PURPOSE_NOTES[intakePurpose];
+}
+
+for (const tab of document.querySelectorAll<HTMLButtonElement>('.intake-tab')) {
+  tab.addEventListener('click', () => {
+    intakePurpose = tab.dataset.purpose as Purpose;
+    renderIntakePurpose();
+  });
+}
+renderIntakePurpose();
+
 interface Metadata {
   purpose: Purpose;
   model: string;
@@ -201,7 +228,7 @@ interface Metadata {
 
 function metadata(): Metadata {
   return {
-    purpose: $<HTMLSelectElement>('meta-purpose').value as Purpose,
+    purpose: intakePurpose,
     model: $<HTMLInputElement>('meta-model').value.trim(),
     processName: $<HTMLInputElement>('meta-process').value.trim(),
     equipmentId: $<HTMLInputElement>('meta-equipment').value.trim(),
@@ -511,7 +538,10 @@ $('analyze').addEventListener('click', () => {
     }
 
     verdictsStale = false;
-    lastRunNote = `${verdicts.size}개 패널 분석 완료 · ${(performance.now() - started).toFixed(0)}ms · 학습 ${candidates.length}개`;
+    const analyzedTraining = panels.filter((p) => p.purpose === 'training' && verdicts.has(p.id)).length;
+    lastRunNote = `${verdicts.size - analyzedTraining}개 분석용 패널 분석 완료`;
+    if (analyzedTraining > 0) lastRunNote += ` (학습용 ${analyzedTraining}개는 집계 제외)`;
+    lastRunNote += ` · ${(performance.now() - started).toFixed(0)}ms · 학습 ${candidates.length}개`;
     if (skipped > 0) lastRunNote += ` · ${skipped}장 제외 (원 검출 실패 또는 이미지 없음)`;
     render();
   })();
@@ -532,6 +562,9 @@ $('analyze').addEventListener('click', () => {
 function buildDashboardPanels(): DashboardPanel[] {
   const out: DashboardPanel[] = [];
   for (const panel of panels) {
+    // Training panels exist to teach kNN; the dashboard reports production
+    // analysis only, so they are excluded even when they carry a verdict.
+    if (panel.purpose === 'training') continue;
     const analysis = verdicts.get(panel.id);
     if (!analysis) continue;
     const points: DashboardPoint[] = analysis.rule.labeled
@@ -634,8 +667,13 @@ function refreshDashboard(): void {
 }
 
 $('dashboard').addEventListener('click', () => {
-  if (verdicts.size === 0) {
-    alert('먼저 불량 분석을 실행하세요.');
+  const hasAnalysisVerdict = panels.some((p) => p.purpose === 'analysis' && verdicts.has(p.id));
+  if (!hasAnalysisVerdict) {
+    alert(
+      verdicts.size > 0
+        ? '분석용 패널이 없습니다. 학습용 패널은 분석정리에 집계되지 않습니다.'
+        : '먼저 불량 분석을 실행하세요.',
+    );
     return;
   }
   navigate('dashboard');
@@ -741,25 +779,37 @@ function render(): void {
   for (const panel of sorted) panelsEl.append(renderPanel(panel));
 }
 
+/**
+ * 분석 현황 aggregates the analysis-purpose panels only. Training uploads are
+ * for building the kNN pool and must not distort the production counts.
+ */
 function renderSummary(): void {
-  $('status-empty').hidden = panels.length > 0;
-  if (panels.length === 0) {
+  const analysisPanels = panels.filter((p) => p.purpose === 'analysis');
+  const trainingCount = panels.length - analysisPanels.length;
+
+  $('status-empty').hidden = analysisPanels.length > 0;
+  $('status-note').hidden = !(analysisPanels.length > 0 && trainingCount > 0);
+  if (analysisPanels.length === 0) {
     summaryEl.hidden = true;
     return;
   }
   summaryEl.hidden = false;
 
-  const training = panels.filter((p) => p.purpose === 'training').length;
-  const approved = panels.filter((p) => p.reviewStatus === 'approved').length;
-  const failed = images.filter((i) => !i.detectOk).length;
-  const confirmed = images.filter((i) => i.confirmed).length;
+  const panelIds = new Set(analysisPanels.map((p) => p.id));
+  const analysisImages = images.filter((i) => panelIds.has(i.panelId));
+  const imageIds = new Set(analysisImages.map((i) => i.id));
+  const labels = annotations.filter((a) => imageIds.has(a.imageId)).length;
+
+  const approved = analysisPanels.filter((p) => p.reviewStatus === 'approved').length;
+  const failed = analysisImages.filter((i) => !i.detectOk).length;
+  const confirmed = analysisImages.filter((i) => i.confirmed).length;
 
   summaryEl.replaceChildren(
-    stat(String(images.length), '이미지'),
-    stat(`${training}/${panels.length}`, '학습용 패널'),
-    stat(String(annotations.length), '수동 라벨'),
-    stat(`${approved}/${panels.length}`, '승인됨', approved < panels.length),
-    stat(`${confirmed}/${images.length}`, 'FPCB 위치확정', confirmed < images.length),
+    stat(String(analysisPanels.length), '분석용 패널'),
+    stat(String(analysisImages.length), '이미지'),
+    stat(String(labels), '수동 라벨'),
+    stat(`${approved}/${analysisPanels.length}`, '검수 완료', approved < analysisPanels.length),
+    stat(`${confirmed}/${analysisImages.length}`, 'FPCB 위치확정', confirmed < analysisImages.length),
     stat(String(failed), '검출 실패', failed > 0),
   );
 }
