@@ -1147,11 +1147,61 @@ for (const defectId of LABELABLE_DEFECTS) {
   defectSelect.append(option);
 }
 
+/**
+ * Snapshot of the frame canvas with everything except the drag preview.
+ *
+ * Redrawing the preview through redrawDetail would rerun the full detection
+ * pass (~70ms) on every pointermove; the drag then lags the cursor and shapes
+ * appear to land somewhere other than where the operator pointed. Blitting the
+ * cached base and stroking only the preview keeps the drag glued to the cursor.
+ */
+let frameBase: HTMLCanvasElement | null = null;
+let previewBlitPending = false;
+
+function blitPreview(): void {
+  if (!frameBase) {
+    redrawDetail();
+    return;
+  }
+  const ctx = frameCanvas.getContext('2d');
+  if (!ctx) return;
+  ctx.drawImage(frameBase, 0, 0);
+  if (previewShape) drawPreview(ctx, previewShape);
+}
+
+const labelHint = document.querySelector<HTMLElement>('.label-hint');
+const LABEL_HINT_DEFAULT = labelHint?.textContent ?? '';
+let labelHintTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Explain a swallowed gesture where the operator is already looking. */
+function flashLabelHint(message: string): void {
+  if (!labelHint) return;
+  clearTimeout(labelHintTimer);
+  labelHint.textContent = message;
+  labelHint.classList.add('warn');
+  labelHintTimer = setTimeout(() => {
+    labelHint.textContent = LABEL_HINT_DEFAULT;
+    labelHint.classList.remove('warn');
+  }, 2500);
+}
+
 attachLabeling(frameCanvas, {
   getTool: () => toolSelect.value as GeomType,
   onPreview: (shape) => {
     previewShape = shape;
-    redrawDetail();
+    if (previewBlitPending) return;
+    previewBlitPending = true;
+    requestAnimationFrame(() => {
+      previewBlitPending = false;
+      blitPreview();
+    });
+  },
+  onReject: (reason) => {
+    flashLabelHint(
+      reason === 'outside'
+        ? 'Active 영역 밖입니다 — 라벨의 중심이 원 안에 오도록 그리세요.'
+        : '너무 짧습니다 — 선/박스는 드래그로 그리세요. 한 지점 표시는 점 도구를 쓰세요.',
+    );
   },
   onShape: (shape) => {
     if (!selected) return;
@@ -1253,6 +1303,7 @@ function redrawDetail(): void {
 
   const rgba = pixels.get(image.id);
   if (!rgba) {
+    frameBase = null; // a stale base must not resurface via blitPreview
     for (const canvas of [srcCanvas, frameCanvas]) {
       canvas.width = 512;
       canvas.height = 512;
@@ -1292,6 +1343,14 @@ function redrawDetail(): void {
   );
 
   drawAnnotations(ctx, annotationsOf(image.id));
+
+  // Cache the fully-composed frame (minus the drag preview) so pointermove can
+  // repaint without rerunning detection. See blitPreview.
+  frameBase ??= document.createElement('canvas');
+  frameBase.width = frameCanvas.width;
+  frameBase.height = frameCanvas.height;
+  frameBase.getContext('2d')?.drawImage(frameCanvas, 0, 0);
+
   if (previewShape) drawPreview(ctx, previewShape);
 
   detailDetections.textContent = describeDetection(detection);

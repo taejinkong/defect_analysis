@@ -1,13 +1,21 @@
 import type { GeomType } from '../core/records';
 import { FRAME_SIZE } from '../core/types';
 import type { Shape } from '../core/annotations';
-import { insideActiveArea } from '../core/annotations';
+import { insideActiveArea, representativePoint } from '../core/annotations';
+
+export type RejectReason = 'outside' | 'too-small';
 
 export interface DrawHandlers {
   readonly getTool: () => GeomType;
   readonly onShape: (shape: Shape) => void;
   /** Called while dragging, so the caller can render a preview. */
   readonly onPreview: (shape: Shape | null) => void;
+  /**
+   * Called when a gesture produced nothing. Every silent drop here used to read
+   * as "the click landed somewhere else" to the operator, so the UI must say
+   * why nothing appeared.
+   */
+  readonly onReject?: (reason: RejectReason) => void;
 }
 
 /**
@@ -22,26 +30,36 @@ export function attachLabeling(canvas: HTMLCanvasElement, handlers: DrawHandlers
   let start: { x: number; y: number } | null = null;
 
   const toFrame = (event: PointerEvent): { x: number; y: number } => {
+    // getBoundingClientRect spans the border box, but the bitmap spans the
+    // content box. With the 1px canvas border, ignoring this shifts every mark
+    // up-left. clientLeft/Top are the border widths (symmetric borders assumed).
     const rect = canvas.getBoundingClientRect();
+    const contentWidth = rect.width - canvas.clientLeft * 2;
+    const contentHeight = rect.height - canvas.clientTop * 2;
     return {
-      x: ((event.clientX - rect.left) / rect.width) * FRAME_SIZE,
-      y: ((event.clientY - rect.top) / rect.height) * FRAME_SIZE,
+      x: ((event.clientX - rect.left - canvas.clientLeft) / contentWidth) * FRAME_SIZE,
+      y: ((event.clientY - rect.top - canvas.clientTop) / contentHeight) * FRAME_SIZE,
     };
   };
 
   const onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
     const point = toFrame(event);
-    if (!insideActiveArea(point.x, point.y)) return;
-
-    canvas.setPointerCapture(event.pointerId);
-    start = point;
 
     if (handlers.getTool() === 'point') {
+      if (!insideActiveArea(point.x, point.y)) {
+        handlers.onReject?.('outside');
+        return;
+      }
       handlers.onShape({ geomType: 'point', x: point.x, y: point.y });
-      start = null;
-      canvas.releasePointerCapture(event.pointerId);
+      return;
     }
+
+    // Lines and boxes may START outside the active circle: the natural first
+    // corner of a box around a rim defect lies outside the disk. Validity is
+    // judged by the representative point when the drag ends.
+    canvas.setPointerCapture(event.pointerId);
+    start = point;
   };
 
   const onPointerMove = (event: PointerEvent): void => {
@@ -57,11 +75,21 @@ export function attachLabeling(canvas: HTMLCanvasElement, handlers: DrawHandlers
     handlers.onPreview(null);
     canvas.releasePointerCapture(event.pointerId);
 
+    const shape: Shape = { geomType: tool, x: start.x, y: start.y, x2: end.x, y2: end.y };
+    start = null;
+
     // A click that never moved is not a zero-size box; it is a slip. Dropping it
     // beats storing a defect with no extent under a shape that implies one.
-    const dragged = Math.hypot(end.x - start.x, end.y - start.y) >= 4;
-    if (dragged) handlers.onShape({ geomType: tool, x: start.x, y: start.y, x2: end.x, y2: end.y });
-    start = null;
+    if (Math.hypot(end.x - shape.x, end.y - shape.y) < 4) {
+      handlers.onReject?.('too-small');
+      return;
+    }
+    const mid = representativePoint(shape);
+    if (!insideActiveArea(mid.x, mid.y)) {
+      handlers.onReject?.('outside');
+      return;
+    }
+    handlers.onShape(shape);
   };
 
   const onPointerCancel = (): void => {
