@@ -1,8 +1,10 @@
 import { FRAME_CENTER, FRAME_RADIUS } from './types';
+import { FRAME_SIZE } from './types';
 import { angleFromOffset, regionFromRadius } from './geometry';
 import type { DefectId, Settings } from './settings';
-import { DEFAULT_SETTINGS, DEFECT_SEVERITY, DEFECT_NAME } from './settings';
-import type { GeomType, NewAnnotation } from './records';
+import { DEFAULT_SETTINGS, DEFECT_SEVERITY, DEFECT_NAME, isDarkDotDefect } from './settings';
+import type { AnnotationRecord, GeomType, NewAnnotation } from './records';
+import { gradeDarkDot } from './verdict';
 
 export interface Shape {
   readonly geomType: GeomType;
@@ -22,10 +24,9 @@ export const ACTIVE_AREA_PX = Math.PI * (FRAME_RADIUS * 0.98) ** 2;
  * a box its center, because that is the value the location heatmap bins. See
  * docs/database_schema.md section 3.4.
  *
- * `areaPx` is only meaningful for a box. A hand-placed point or line has no
- * measured extent, so it contributes nothing to `dark_area_ratio`; manual dark
- * dots therefore cannot drive the 小/中/大 grade. Grading stays with the rule
- * engine's pixel masks, which is the only place real area is known.
+ * `areaPx` is only meaningful for a box. It is clipped to the circular Active
+ * area, matching what the operator can actually select on the normalized frame.
+ * A hand-placed point or line has no measured extent.
  */
 export function buildAnnotation(
   shape: Shape,
@@ -38,7 +39,7 @@ export function buildAnnotation(
   const dx = point.x - FRAME_CENTER;
   const dy = point.y - FRAME_CENTER;
   const rRatio = Math.hypot(dx, dy) / FRAME_RADIUS;
-  const areaPx = shape.geomType === 'box' ? boxArea(shape) : 0;
+  const areaPx = shape.geomType === 'box' ? boxAreaInsideActive(shape) : 0;
 
   return {
     imageId,
@@ -65,9 +66,120 @@ export function representativePoint(shape: Shape): { x: number; y: number } {
   return { x: (shape.x + shape.x2) / 2, y: (shape.y + shape.y2) / 2 };
 }
 
-function boxArea(shape: Shape): number {
+export interface StoredShape {
+  readonly geomType: GeomType;
+  readonly x: number;
+  readonly y: number;
+  readonly x2: number | null;
+  readonly y2: number | null;
+}
+
+/**
+ * Recover the gesture geometry from a stored annotation.
+ *
+ * The schema intentionally stores x/y as the representative point used by the
+ * heatmap, while x2/y2 stores the drag end. For a line or box the original drag
+ * start is therefore `2 * midpoint - end`. Treating x/y as the start made saved
+ * lines half-length and saved boxes one quarter of the selected area.
+ */
+export function shapeFromStoredAnnotation(annotation: StoredShape): Shape {
+  if (annotation.geomType === 'point' || annotation.x2 === null || annotation.y2 === null) {
+    return { geomType: annotation.geomType, x: annotation.x, y: annotation.y };
+  }
+  return {
+    geomType: annotation.geomType,
+    x: annotation.x * 2 - annotation.x2,
+    y: annotation.y * 2 - annotation.y2,
+    x2: annotation.x2,
+    y2: annotation.y2,
+  };
+}
+
+/** Pixel area of one box after clipping it to the circular Active area. */
+function boxAreaInsideActive(shape: Shape): number {
   if (shape.x2 === undefined || shape.y2 === undefined) return 0;
-  return Math.abs(shape.x2 - shape.x) * Math.abs(shape.y2 - shape.y);
+  const minX = Math.max(0, Math.floor(Math.min(shape.x, shape.x2)));
+  const maxX = Math.min(FRAME_SIZE, Math.ceil(Math.max(shape.x, shape.x2)));
+  const minY = Math.max(0, Math.floor(Math.min(shape.y, shape.y2)));
+  const maxY = Math.min(FRAME_SIZE, Math.ceil(Math.max(shape.y, shape.y2)));
+  const activeR2 = (FRAME_RADIUS * 0.98) ** 2;
+  let area = 0;
+  for (let y = minY; y < maxY; y++) {
+    const dy = y + 0.5 - FRAME_CENTER;
+    for (let x = minX; x < maxX; x++) {
+      const dx = x + 0.5 - FRAME_CENTER;
+      if (dx * dx + dy * dy <= activeR2) area++;
+    }
+  }
+  return area;
+}
+
+/**
+ * Union area of all manual dark-area boxes on one image.
+ *
+ * Rasterizing onto the 512 frame prevents overlapping boxes from being counted
+ * twice and excludes the part of a rim box that lies outside the Active circle.
+ */
+export function combinedDarkAreaPct(
+  annotations: readonly Pick<AnnotationRecord, 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2'>[],
+): number {
+  const mask = new Uint8Array(FRAME_SIZE * FRAME_SIZE);
+  let area = 0;
+  for (const annotation of annotations) {
+    if (!isDarkDotDefect(annotation.defectId) || annotation.geomType !== 'box') continue;
+    const shape = shapeFromStoredAnnotation(annotation);
+    if (shape.x2 === undefined || shape.y2 === undefined) continue;
+    const minX = Math.max(0, Math.floor(Math.min(shape.x, shape.x2)));
+    const maxX = Math.min(FRAME_SIZE, Math.ceil(Math.max(shape.x, shape.x2)));
+    const minY = Math.max(0, Math.floor(Math.min(shape.y, shape.y2)));
+    const maxY = Math.min(FRAME_SIZE, Math.ceil(Math.max(shape.y, shape.y2)));
+    const activeR2 = (FRAME_RADIUS * 0.98) ** 2;
+    for (let y = minY; y < maxY; y++) {
+      const dy = y + 0.5 - FRAME_CENTER;
+      for (let x = minX; x < maxX; x++) {
+        const dx = x + 0.5 - FRAME_CENTER;
+        if (dx * dx + dy * dy > activeR2) continue;
+        const index = y * FRAME_SIZE + x;
+        if (mask[index] === 0) {
+          mask[index] = 1;
+          area++;
+        }
+      }
+    }
+  }
+  return (area / ACTIVE_AREA_PX) * 100;
+}
+
+export interface ManualDarkGrade {
+  readonly areaPct: number;
+  readonly defectId: DefectId | null;
+}
+
+/**
+ * Panel grade from manual dark selections.
+ *
+ * Dark boxes are unioned within each R/G/B/W image, then the largest pattern
+ * ratio represents the panel. Taking the maximum mirrors Rule analysis and
+ * avoids counting the same physical defect up to four times.
+ */
+export function manualDarkGrade(
+  annotations: readonly Pick<
+    AnnotationRecord,
+    'imageId' | 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2'
+  >[],
+  settings: Settings = DEFAULT_SETTINGS,
+): ManualDarkGrade {
+  const byImage = new Map<number, typeof annotations>();
+  for (const annotation of annotations) {
+    if (!isDarkDotDefect(annotation.defectId) || annotation.geomType !== 'box') continue;
+    const list = byImage.get(annotation.imageId) ?? [];
+    byImage.set(annotation.imageId, [...list, annotation]);
+  }
+  let areaPct = 0;
+  for (const imageAnnotations of byImage.values()) {
+    areaPct = Math.max(areaPct, combinedDarkAreaPct(imageAnnotations));
+  }
+  return { areaPct, defectId: gradeDarkDot(areaPct, settings) };
 }
 
 /** Is the point inside the active display area of the normalized frame? */
@@ -97,11 +209,16 @@ export function primaryFromLabels(defectIds: readonly DefectId[]): DefectId {
 export function describeAnnotation(annotation: {
   defectId: DefectId;
   geomType: GeomType;
+  areaRatio?: number;
   rRatio: number;
   angleDeg: number;
   region: string;
 }): string {
   const hour = (6 + annotation.angleDeg / 30) % 12;
   const clock = hour < 1 ? hour + 12 : hour;
-  return `${DEFECT_NAME[annotation.defectId]} · ${annotation.geomType} · ${clock.toFixed(1)}시 · ${annotation.region} (r=${annotation.rRatio.toFixed(2)})`;
+  const name = isDarkDotDefect(annotation.defectId) ? `암점 영역 → ${DEFECT_NAME[annotation.defectId]}` : DEFECT_NAME[annotation.defectId];
+  const area = isDarkDotDefect(annotation.defectId) && annotation.geomType === 'box' && annotation.areaRatio !== undefined
+    ? ` · 선택 ${annotation.areaRatio.toFixed(2)}%`
+    : '';
+  return `${name} · ${annotation.geomType}${area} · ${clock.toFixed(1)}시 · ${annotation.region} (r=${annotation.rRatio.toFixed(2)})`;
 }

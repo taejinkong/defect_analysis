@@ -1,7 +1,7 @@
 import type { GeomType } from '../core/records';
 import { FRAME_SIZE } from '../core/types';
 import type { Shape } from '../core/annotations';
-import { insideActiveArea, representativePoint } from '../core/annotations';
+import { insideActiveArea, representativePoint, shapeFromStoredAnnotation } from '../core/annotations';
 
 export type RejectReason = 'outside' | 'too-small';
 
@@ -126,7 +126,8 @@ export function drawAnnotations(
     const active = ids !== undefined && highlightId !== undefined && ids[index] === highlightId;
     ctx.strokeStyle = active ? '#fff' : MANUAL;
     ctx.fillStyle = active ? '#fff' : MANUAL;
-    strokeShape(ctx, annotation);
+    const shape = shapeFromStoredAnnotation(annotation);
+    strokeShape(ctx, { ...shape, x2: shape.x2 ?? null, y2: shape.y2 ?? null });
   });
   ctx.restore();
 }

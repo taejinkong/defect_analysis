@@ -104,6 +104,10 @@ export function judgePanel(
   const confirmed = (kind: BlobKind): boolean =>
     (patternsByKind.get(kind)?.size ?? 0) >= minConfirmations;
 
+  // Each image ratio is already the sum of every disconnected dark-dot region
+  // in that pattern. The same physical defect appears in R/G/B/W, so summing
+  // patterns would count it up to four times; the largest pattern total is the
+  // panel's representative combined area.
   const darkAreaPct = Math.max(...images.map((i) => i.darkAreaPct));
   const darkGrade = gradeDarkDot(darkAreaPct, settings);
 
@@ -133,7 +137,7 @@ export function judgePanel(
 
   const detectedDefectIds = [...detected].sort();
   const reasons: string[] = [];
-  if (darkGrade) reasons.push(`dark_area_ratio=${darkAreaPct.toFixed(2)}% → ${DEFECT_NAME[darkGrade]}`);
+  if (darkGrade) reasons.push(`암점 합산 면적비=${darkAreaPct.toFixed(2)}% → ${DEFECT_NAME[darkGrade]}`);
   for (const id of detectedDefectIds) if (id !== darkGrade) reasons.push(DEFECT_NAME[id]);
 
   let finalJudgementId: DefectId;

@@ -12,10 +12,24 @@ import { judgePanel, type PanelVerdict } from './core/verdict';
 import { combinePanelFeature, fromBytes, toBytes, FEATURE_VERSION, PANEL_FEATURE_DIM } from './core/features';
 import { knnSearch, type SearchEntry } from './core/knn';
 import { fuseVerdict, type FusedVerdict } from './core/fusion';
-import { DEFECT, DEFECT_NAME, LABELABLE_DEFECTS, type DefectId, type Settings } from './core/settings';
+import {
+  DEFECT,
+  DEFECT_NAME,
+  LABELABLE_DEFECTS,
+  isDarkDotDefect,
+  type DefectId,
+  type Settings,
+} from './core/settings';
 import type { AnnotationRecord, GeomType, ImageRecord, PanelRecord, Purpose, Repository } from './core/records';
 import { IndexedDbRepository } from './core/db';
-import { buildAnnotation, describeAnnotation, judgeFromLabels, type Shape } from './core/annotations';
+import {
+  buildAnnotation,
+  describeAnnotation,
+  judgeFromLabels,
+  manualDarkGrade,
+  type ManualDarkGrade,
+  type Shape,
+} from './core/annotations';
 import { exportLabels, hasPixels, importLabels } from './core/transfer';
 import { fileToRgba, paintRgba, rgbaToBlob } from './browser/decode';
 import { drawDetections, drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
@@ -130,7 +144,10 @@ const settingsPanel = createSettingsPanel(settings, {
     if (verdicts.size > 0) verdictsStale = true;
     scheduleLivePreview();
   },
-  onCommit: () => renderAnalyzeNote(),
+  onCommit: () => {
+    renderAnalyzeNote();
+    if (repo) void syncAllManualDarkGrades();
+  },
 });
 settingsMount.append(settingsPanel.element);
 
@@ -183,6 +200,9 @@ void (async () => {
     repo = await IndexedDbRepository.open();
     await IndexedDbRepository.requestPersistence();
     await reload();
+    // Migrate box labels made by older builds, where the operator manually
+    // selected 小/中/大, to the grade derived from their combined selected area.
+    await syncAllManualDarkGrades();
   } catch (err) {
     console.error(err);
     alert(`저장소를 열 수 없습니다: ${String(err)}`);
@@ -933,6 +953,10 @@ function spacer(): HTMLElement {
  * Un-approving pulls it back out of the kNN search set.
  */
 async function setPanelApproval(panel: PanelRecord, approved: boolean): Promise<void> {
+  // Dark-area labels carry one panel grade derived from their combined area.
+  // Recalculate immediately before learning so kNN never stores a stale manual
+  // 小/中/大 choice from an older build or threshold setting.
+  await syncPanelDarkGrade(panel.id);
   const next = approved ? 'approved' : 'pending';
   await repo.updatePanel(panel.id, { reviewStatus: next });
   for (const image of imagesOf(panel.id)) {
@@ -983,6 +1007,37 @@ async function storeEmbedding(panelId: number): Promise<void> {
   });
 }
 
+interface SyncedManualDarkGrade extends ManualDarkGrade {
+  readonly changed: boolean;
+}
+
+async function syncPanelDarkGrade(panelId: number): Promise<SyncedManualDarkGrade> {
+  const imageIds = new Set(imagesOf(panelId).map((image) => image.id));
+  const labels = annotations.filter((annotation) => imageIds.has(annotation.imageId));
+  const result = manualDarkGrade(labels, settings);
+  if (!result.defectId) return { ...result, changed: false };
+
+  let changed = false;
+  for (const annotation of labels) {
+    if (!isDarkDotDefect(annotation.defectId) || annotation.defectId === result.defectId) continue;
+    await repo.updateAnnotation(annotation.id, { defectId: result.defectId });
+    annotation.defectId = result.defectId;
+    changed = true;
+  }
+  return { ...result, changed };
+}
+
+async function syncAllManualDarkGrades(): Promise<void> {
+  for (const panel of panels) {
+    const result = await syncPanelDarkGrade(panel.id);
+    if (result.changed && panel.reviewStatus === 'approved' && panel.purpose === 'training') {
+      await storeEmbedding(panel.id);
+    }
+  }
+  render();
+  if (selected) renderLabelList();
+}
+
 function deleteButton(panel: PanelRecord): HTMLElement {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1018,8 +1073,17 @@ function renderLabelSummary(labels: AnnotationRecord[]): HTMLElement {
   name.textContent = DEFECT_NAME[judgement];
   line.append(name);
 
+  const dark = manualDarkGrade(labels, settings);
+  const darkCount = labels.filter((label) => isDarkDotDefect(label.defectId) && label.geomType === 'box').length;
+  if (dark.defectId && darkCount > 0) {
+    line.append(badge(`암점 영역 ${darkCount}개 · 합산 ${dark.areaPct.toFixed(2)}% → ${DEFECT_NAME[dark.defectId]}`, 'info'));
+  }
+
   const counts = new Map<DefectId, number>();
-  for (const label of labels) counts.set(label.defectId, (counts.get(label.defectId) ?? 0) + 1);
+  for (const label of labels) {
+    if (isDarkDotDefect(label.defectId)) continue;
+    counts.set(label.defectId, (counts.get(label.defectId) ?? 0) + 1);
+  }
   for (const [defectId, count] of counts) line.append(badge(`${DEFECT_NAME[defectId]} ×${count}`, 'info'));
 
   box.append(line);
@@ -1140,12 +1204,28 @@ function drawThumb(canvas: HTMLCanvasElement, image: ImageRecord): void {
 
 // ---------------------------------------------------------------- labeling
 
-for (const defectId of LABELABLE_DEFECTS) {
+const DARK_AREA_VALUE = 'dark-area';
+const darkAreaOption = document.createElement('option');
+darkAreaOption.value = DARK_AREA_VALUE;
+darkAreaOption.textContent = '암점 영역 (합산 면적 자동 등급)';
+defectSelect.append(darkAreaOption);
+
+for (const defectId of LABELABLE_DEFECTS.filter((id) => !isDarkDotDefect(id))) {
   const option = document.createElement('option');
   option.value = defectId;
   option.textContent = `${DEFECT_NAME[defectId]} (${defectId})`;
   defectSelect.append(option);
 }
+
+function syncLabelTool(): void {
+  const selectingDarkArea = defectSelect.value === DARK_AREA_VALUE;
+  if (selectingDarkArea) toolSelect.value = 'box';
+  toolSelect.disabled = selectingDarkArea;
+  toolSelect.title = selectingDarkArea ? '암점은 선택 영역의 합계가 필요하므로 박스 도구를 사용합니다.' : '';
+}
+
+defectSelect.addEventListener('change', syncLabelTool);
+syncLabelTool();
 
 /**
  * Snapshot of the frame canvas with everything except the drag preview.
@@ -1205,10 +1285,23 @@ attachLabeling(frameCanvas, {
   },
   onShape: (shape) => {
     if (!selected) return;
+    const selectingDarkArea = defectSelect.value === DARK_AREA_VALUE;
+    if (selectingDarkArea && shape.geomType !== 'box') {
+      flashLabelHint('암점은 면적 합산을 위해 박스 도구로 영역을 선택해야 합니다.');
+      syncLabelTool();
+      return;
+    }
     const image = selected;
     void (async () => {
-      await repo.addAnnotation(buildAnnotation(shape, defectSelect.value as DefectId, image.id, new Date(), settings));
+      const defectId = selectingDarkArea ? DEFECT.DARK_DOT_SMALL : (defectSelect.value as DefectId);
+      await repo.addAnnotation(buildAnnotation(shape, defectId, image.id, new Date(), settings));
       annotations = await repo.listAnnotations();
+      const dark = await syncPanelDarkGrade(image.panelId);
+      const panel = panels.find((candidate) => candidate.id === image.panelId);
+      if (panel?.reviewStatus === 'approved' && panel.purpose === 'training') await storeEmbedding(panel.id);
+      if (selectingDarkArea && dark.defectId) {
+        flashLabelHint(`암점 선택 영역 합계 ${dark.areaPct.toFixed(2)}% → ${DEFECT_NAME[dark.defectId]}`);
+      }
       renderLabelList();
       redrawDetail();
       render();
@@ -1238,10 +1331,14 @@ function renderLabelList(): void {
     remove.type = 'button';
     remove.className = 'ghost small';
     remove.textContent = '삭제';
+    const panelId = selected.panelId;
     remove.addEventListener('click', () => {
       void (async () => {
         await repo.deleteAnnotation(annotation.id);
         annotations = await repo.listAnnotations();
+        await syncPanelDarkGrade(panelId);
+        const panel = panels.find((candidate) => candidate.id === panelId);
+        if (panel?.reviewStatus === 'approved' && panel.purpose === 'training') await storeEmbedding(panel.id);
         renderLabelList();
         redrawDetail();
         render();
@@ -1364,7 +1461,7 @@ function describeDetection(detection: ImageDetection): string {
   const counts = new Map<string, number>();
   for (const d of detection.detections) counts.set(d.kind, (counts.get(d.kind) ?? 0) + 1);
 
-  const parts = [`dark_area_ratio ${detection.darkAreaPct.toFixed(2)}%`];
+  const parts = [`암점 합산 면적비 ${detection.darkAreaPct.toFixed(2)}%`];
   parts.push(counts.size > 0 ? [...counts].map(([k, n]) => `${k} ×${n}`).join(', ') : '검출 없음');
   if (detection.drivingFlag) parts.push('구동불량 의심');
   return parts.join(' · ');

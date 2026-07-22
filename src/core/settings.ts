@@ -333,6 +333,17 @@ export const DEFECT_NAME: Record<DefectId, string> = {
   D011: '복수불량',
 };
 
+/** The three panel-level grades that are derived from one combined dark area. */
+export const DARK_DOT_DEFECTS: readonly DefectId[] = [
+  DEFECT.DARK_DOT_SMALL,
+  DEFECT.DARK_DOT_MEDIUM,
+  DEFECT.DARK_DOT_LARGE,
+];
+
+export function isDarkDotDefect(defectId: DefectId): boolean {
+  return DARK_DOT_DEFECTS.includes(defectId);
+}
+
 /**
  * Defects a person may place on an image.
  *

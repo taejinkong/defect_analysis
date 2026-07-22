@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_AREA_PX,
   buildAnnotation,
+  combinedDarkAreaPct,
   insideActiveArea,
   judgeFromLabels,
+  manualDarkGrade,
   primaryFromLabels,
   representativePoint,
+  shapeFromStoredAnnotation,
 } from './annotations';
 import { FRAME_CENTER, FRAME_RADIUS } from './types';
 import { angleDelta } from './geometry';
-import { DEFECT } from './settings';
+import { DEFAULT_SETTINGS, DEFECT } from './settings';
 
 const NOW = new Date('2026-07-09T12:00:00.000Z');
 
@@ -24,6 +27,40 @@ describe('representativePoint', () => {
 
   it('returns the center of a box', () => {
     expect(representativePoint({ geomType: 'box', x: 10, y: 10, x2: 30, y2: 50 })).toEqual({ x: 20, y: 30 });
+  });
+});
+
+describe('shapeFromStoredAnnotation', () => {
+  it('restores the full line instead of drawing only midpoint-to-end', () => {
+    const stored = buildAnnotation(
+      { geomType: 'line', x: 100, y: 140, x2: 300, y2: 260 },
+      DEFECT.BRIGHT_LINE_H,
+      1,
+      NOW,
+    );
+    expect(shapeFromStoredAnnotation(stored)).toEqual({
+      geomType: 'line',
+      x: 100,
+      y: 140,
+      x2: 300,
+      y2: 260,
+    });
+  });
+
+  it('restores all four corners of the selected box', () => {
+    const stored = buildAnnotation(
+      { geomType: 'box', x: 120, y: 180, x2: 320, y2: 300 },
+      DEFECT.BRIGHT_DOT,
+      1,
+      NOW,
+    );
+    expect(shapeFromStoredAnnotation(stored)).toEqual({
+      geomType: 'box',
+      x: 120,
+      y: 180,
+      x2: 320,
+      y2: 300,
+    });
   });
 });
 
@@ -138,6 +175,36 @@ describe('judgeFromLabels', () => {
 
   it('is 복수불량 for two distinct kinds', () => {
     expect(judgeFromLabels([DEFECT.BRIGHT_DOT, DEFECT.DARK_LINE_V])).toBe(DEFECT.MULTI);
+  });
+});
+
+describe('manual dark-area grading', () => {
+  const box = (imageId: number, x: number, y: number, x2: number, y2: number) =>
+    buildAnnotation({ geomType: 'box', x, y, x2, y2 }, DEFECT.DARK_DOT_SMALL, imageId, NOW);
+
+  it('unions every selected region and assigns one grade from the total area', () => {
+    const labels = [box(1, 150, 200, 210, 300), box(1, 300, 200, 360, 300)];
+    const result = manualDarkGrade(labels);
+    expect(result.areaPct).toBeGreaterThan(5);
+    expect(result.areaPct).toBeLessThan(15);
+    expect(result.defectId).toBe(DEFECT.DARK_DOT_MEDIUM);
+  });
+
+  it('does not double-count overlapping selections', () => {
+    const one = box(1, 190, 190, 290, 290);
+    expect(combinedDarkAreaPct([one, one])).toBeCloseTo(combinedDarkAreaPct([one]), 8);
+  });
+
+  it('uses the largest pattern total instead of summing the same defect across patterns', () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      'dark_dot.medium_max_pct': 8,
+    };
+    const labels = [box(1, 190, 190, 290, 290), box(2, 190, 190, 290, 290)];
+    const result = manualDarkGrade(labels, settings);
+    expect(result.areaPct).toBeGreaterThan(5);
+    expect(result.areaPct).toBeLessThan(8);
+    expect(result.defectId).toBe(DEFECT.DARK_DOT_MEDIUM);
   });
 });
 
