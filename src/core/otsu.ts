@@ -49,6 +49,12 @@ export interface MaskedOtsu {
    * scores around 2.
    */
   readonly separation: number;
+  /** Share and mean intensity of pixels at or below the threshold. */
+  readonly lowerFraction: number;
+  readonly lowerMean: number;
+  /** Share and mean intensity of pixels above the threshold. */
+  readonly upperFraction: number;
+  readonly upperMean: number;
 }
 
 /** Otsu's threshold over only the pixels inside `mask`, with a bimodality score. */
@@ -60,7 +66,9 @@ export function otsuThresholdMasked(img: Gray, mask: Mask): MaskedOtsu {
     hist[img.data[i]]++;
     total++;
   }
-  if (total === 0) return { threshold: 0, separation: 0 };
+  if (total === 0) {
+    return { threshold: 0, separation: 0, lowerFraction: 0, lowerMean: 0, upperFraction: 0, upperMean: 0 };
+  }
 
   let sumAll = 0;
   for (let t = 0; t < 256; t++) sumAll += t * hist[t];
@@ -75,6 +83,8 @@ export function otsuThresholdMasked(img: Gray, mask: Mask): MaskedOtsu {
   let best = 0;
   let bestScore = -1;
   let bestDiff = 0;
+  let bestLowerCount = 0;
+  let bestLowerSum = 0;
 
   for (let t = 0; t < 256; t++) {
     countBg += hist[t];
@@ -88,13 +98,23 @@ export function otsuThresholdMasked(img: Gray, mask: Mask): MaskedOtsu {
       bestScore = score;
       best = t;
       bestDiff = diff;
+      bestLowerCount = countBg;
+      bestLowerSum = sumBg;
     }
   }
 
   // sigma_between^2 = bestScore / total^2, and within = total - between.
   const between = bestScore / (total * total);
   const within = Math.max(totalVariance - between, 1e-9);
-  return { threshold: best, separation: Math.abs(bestDiff) / Math.sqrt(within) };
+  const upperCount = total - bestLowerCount;
+  return {
+    threshold: best,
+    separation: Math.abs(bestDiff) / Math.sqrt(within),
+    lowerFraction: bestLowerCount / total,
+    lowerMean: bestLowerCount > 0 ? bestLowerSum / bestLowerCount : 0,
+    upperFraction: upperCount / total,
+    upperMean: upperCount > 0 ? (sumAll - bestLowerSum) / upperCount : 0,
+  };
 }
 
 export function thresholdMask(img: Gray, threshold: number): Mask {

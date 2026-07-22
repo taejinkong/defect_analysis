@@ -30,6 +30,13 @@ export interface DashboardPanel {
   readonly confidence: number;
   readonly needsReview: boolean;
   readonly points: DashboardPoint[];
+  readonly imageCount?: number;
+  readonly preprocessingFailed?: boolean;
+  readonly synthetic?: boolean;
+  readonly reviewerAgreement?: boolean | null;
+  readonly automaticJudgementId?: DefectId;
+  readonly reviewerJudgementId?: DefectId | null;
+  readonly capturedAt?: string;
 }
 
 export interface Overview {
@@ -40,6 +47,11 @@ export interface Overview {
   readonly multi: number;
   readonly needsReview: number;
   readonly topDefect: DefectId | null;
+  readonly totalImages: number;
+  readonly preprocessingFailures: number;
+  readonly syntheticPanels: number;
+  readonly realPanels: number;
+  readonly reviewerAgreementPct: number | null;
 }
 
 export function overview(panels: readonly DashboardPanel[]): Overview {
@@ -47,6 +59,7 @@ export function overview(panels: readonly DashboardPanel[]): Overview {
   const good = panels.filter((p) => p.finalJudgementId === DEFECT.GOOD).length;
   const multi = panels.filter((p) => p.finalJudgementId === DEFECT.MULTI).length;
   const needsReview = panels.filter((p) => p.needsReview).length;
+  const reviewed = panels.filter((panel) => panel.reviewerAgreement !== null && panel.reviewerAgreement !== undefined);
 
   const labelCounts = defectRatioByLabel(panels);
   let topDefect: DefectId | null = null;
@@ -66,6 +79,13 @@ export function overview(panels: readonly DashboardPanel[]): Overview {
     multi,
     needsReview,
     topDefect,
+    totalImages: panels.reduce((sum, panel) => sum + (panel.imageCount ?? 0), 0),
+    preprocessingFailures: panels.filter((panel) => panel.preprocessingFailed).length,
+    syntheticPanels: panels.filter((panel) => panel.synthetic).length,
+    realPanels: panels.filter((panel) => !panel.synthetic).length,
+    reviewerAgreementPct: reviewed.length > 0
+      ? (reviewed.filter((panel) => panel.reviewerAgreement).length / reviewed.length) * 100
+      : null,
   };
 }
 

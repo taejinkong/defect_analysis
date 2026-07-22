@@ -1,7 +1,14 @@
-import type { AnnotationRecord, ImageRecord, PanelRecord, Repository } from './records';
+import type {
+  AnnotationRecord,
+  ImageRecord,
+  PanelDecisionRecord,
+  PanelRecord,
+  Repository,
+  ReviewRecord,
+} from './records';
 import { LABELABLE_DEFECTS, type DefectId } from './settings';
 
-export const EXPORT_VERSION = 1;
+export const EXPORT_VERSION = 3;
 
 export interface ExportedImage {
   pattern: ImageRecord['pattern'];
@@ -15,6 +22,13 @@ export interface ExportedImage {
   origHeight: number;
   detectOk: boolean;
   fpcbStrength: number;
+  originalFilename?: string;
+  sourceType?: ImageRecord['sourceType'];
+  synthetic?: boolean;
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+  originalMapping?: ImageRecord['originalMapping'];
+  mappingHistory?: ImageRecord['mappingHistory'];
   annotations: Omit<AnnotationRecord, 'id' | 'imageId'>[];
 }
 
@@ -28,7 +42,12 @@ export interface ExportedPanel {
   uploadedAt: string;
   uploadedBy: string;
   reviewStatus: PanelRecord['reviewStatus'];
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+  inspectionMode?: PanelRecord['inspectionMode'];
   images: ExportedImage[];
+  automaticDecision?: Omit<PanelDecisionRecord, 'id' | 'panelId'>;
+  engineerReview?: Omit<ReviewRecord, 'id' | 'panelId' | 'originalDecisionId'>;
 }
 
 export interface ExportFile {
@@ -46,10 +65,12 @@ export interface ExportFile {
  * database on the same PC. The UI must state that this is not a full backup.
  */
 export async function exportLabels(repo: Repository): Promise<ExportFile> {
-  const [panels, images, annotations] = await Promise.all([
+  const [panels, images, annotations, decisions, reviews] = await Promise.all([
     repo.listPanels(),
     repo.listImages(),
     repo.listAnnotations(),
+    repo.listPanelDecisions(),
+    repo.listReviews(),
   ]);
 
   const annotationsByImage = new Map<number, AnnotationRecord[]>();
@@ -81,6 +102,21 @@ export async function exportLabels(repo: Repository): Promise<ExportFile> {
         uploadedAt: panel.uploadedAt,
         uploadedBy: panel.uploadedBy,
         reviewStatus: panel.reviewStatus,
+        ...(panel.captureProfileVersion ? { captureProfileVersion: panel.captureProfileVersion } : {}),
+        ...(panel.goldenProfileVersion ? { goldenProfileVersion: panel.goldenProfileVersion } : {}),
+        ...(panel.inspectionMode ? { inspectionMode: panel.inspectionMode } : {}),
+        ...(() => {
+          const decision = decisions.find((item) => item.panelId === panel.id);
+          if (!decision) return {};
+          const { id: _id, panelId: _panelId, ...automaticDecision } = decision;
+          return { automaticDecision };
+        })(),
+        ...(() => {
+          const review = reviews.find((item) => item.panelId === panel.id);
+          if (!review) return {};
+          const { id: _id, panelId: _panelId, originalDecisionId: _decisionId, ...engineerReview } = review;
+          return { engineerReview };
+        })(),
         images: (imagesByPanel.get(panel.id) ?? []).map((image) => ({
           pattern: image.pattern,
           activeCx: image.activeCx,
@@ -93,6 +129,13 @@ export async function exportLabels(repo: Repository): Promise<ExportFile> {
           origHeight: image.origHeight,
           detectOk: image.detectOk,
           fpcbStrength: image.fpcbStrength,
+          ...(image.originalFilename ? { originalFilename: image.originalFilename } : {}),
+          ...(image.sourceType ? { sourceType: image.sourceType } : {}),
+          ...(image.synthetic !== undefined ? { synthetic: image.synthetic } : {}),
+          ...(image.captureProfileVersion ? { captureProfileVersion: image.captureProfileVersion } : {}),
+          ...(image.goldenProfileVersion ? { goldenProfileVersion: image.goldenProfileVersion } : {}),
+          ...(image.originalMapping ? { originalMapping: image.originalMapping } : {}),
+          ...(image.mappingHistory ? { mappingHistory: image.mappingHistory } : {}),
           annotations: (annotationsByImage.get(image.id) ?? []).map(({ id: _id, imageId: _imageId, ...rest }) => rest),
         })),
       })),
@@ -121,8 +164,8 @@ export async function importLabels(repo: Repository, raw: unknown): Promise<Impo
   if (!file || typeof file !== 'object' || !Array.isArray(file.panels)) {
     throw new Error('내보내기 파일 형식이 아닙니다.');
   }
-  if (file.version !== EXPORT_VERSION) {
-    throw new Error(`지원하지 않는 버전입니다: ${String(file.version)} (기대값 ${EXPORT_VERSION})`);
+  if (file.version !== 1 && file.version !== 2 && file.version !== EXPORT_VERSION) {
+    throw new Error(`지원하지 않는 버전입니다: ${String(file.version)} (지원: 1, 2, ${EXPORT_VERSION})`);
   }
 
   const warnings: string[] = [];
@@ -146,6 +189,9 @@ export async function importLabels(repo: Repository, raw: unknown): Promise<Impo
       uploadedBy: panel.uploadedBy ?? '',
       reviewStatus: panel.reviewStatus ?? 'pending',
       deletedAt: null,
+      ...(panel.captureProfileVersion ? { captureProfileVersion: panel.captureProfileVersion } : {}),
+      ...(panel.goldenProfileVersion ? { goldenProfileVersion: panel.goldenProfileVersion } : {}),
+      ...(panel.inspectionMode ? { inspectionMode: panel.inspectionMode } : {}),
     });
     panelCount++;
 
@@ -167,6 +213,13 @@ export async function importLabels(repo: Repository, raw: unknown): Promise<Impo
         detectOk: Boolean(image.detectOk),
         detectMessage: '',
         fpcbStrength: image.fpcbStrength ?? 0,
+        ...(image.originalFilename ? { originalFilename: image.originalFilename } : {}),
+        sourceType: 'imported',
+        synthetic: Boolean(image.synthetic),
+        ...(image.captureProfileVersion ? { captureProfileVersion: image.captureProfileVersion } : {}),
+        ...(image.goldenProfileVersion ? { goldenProfileVersion: image.goldenProfileVersion } : {}),
+        ...(image.originalMapping ? { originalMapping: image.originalMapping } : {}),
+        ...(image.mappingHistory ? { mappingHistory: image.mappingHistory } : {}),
       });
       imageCount++;
 
@@ -178,6 +231,16 @@ export async function importLabels(repo: Repository, raw: unknown): Promise<Impo
         await repo.addAnnotation({ ...annotation, imageId });
         annotationCount++;
       }
+    }
+    if (panel.automaticDecision) {
+      await repo.putPanelDecision({ ...panel.automaticDecision, panelId });
+    }
+    if (panel.engineerReview) {
+      await repo.putReview({
+        ...panel.engineerReview,
+        panelId,
+        originalDecisionId: null,
+      });
     }
   }
 

@@ -34,12 +34,14 @@ export function buildAnnotation(
   imageId: number,
   now: Date = new Date(),
   settings: Settings = DEFAULT_SETTINGS,
+  maskRle?: string,
 ): NewAnnotation {
   const point = representativePoint(shape);
   const dx = point.x - FRAME_CENTER;
   const dy = point.y - FRAME_CENTER;
   const rRatio = Math.hypot(dx, dy) / FRAME_RADIUS;
-  const areaPx = shape.geomType === 'box' ? boxAreaInsideActive(shape) : 0;
+  const maskArea = maskRle ? maskAreaFromRle(maskRle) : 0;
+  const areaPx = maskArea > 0 ? maskArea : shape.geomType === 'box' ? boxAreaInsideActive(shape) : 0;
 
   return {
     imageId,
@@ -58,6 +60,7 @@ export function buildAnnotation(
     confidence: 1,
     reviewStatus: 'pending',
     createdAt: now.toISOString(),
+    ...(maskRle ? { maskRle } : {}),
   };
 }
 
@@ -121,12 +124,23 @@ function boxAreaInsideActive(shape: Shape): number {
  * twice and excludes the part of a rim box that lies outside the Active circle.
  */
 export function combinedDarkAreaPct(
-  annotations: readonly Pick<AnnotationRecord, 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2'>[],
+  annotations: readonly Pick<AnnotationRecord, 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2' | 'maskRle'>[],
 ): number {
   const mask = new Uint8Array(FRAME_SIZE * FRAME_SIZE);
   let area = 0;
   for (const annotation of annotations) {
-    if (!isDarkDotDefect(annotation.defectId) || annotation.geomType !== 'box') continue;
+    if (!isDarkDotDefect(annotation.defectId) || (annotation.geomType !== 'box' && annotation.geomType !== 'mask')) continue;
+    if (annotation.maskRle) {
+      for (const index of decodeMaskRle(annotation.maskRle)) {
+        if (index < 0 || index >= mask.length || mask[index] === 1) continue;
+        const x = index % FRAME_SIZE;
+        const y = (index - x) / FRAME_SIZE;
+        if ((x + 0.5 - FRAME_CENTER) ** 2 + (y + 0.5 - FRAME_CENTER) ** 2 > (FRAME_RADIUS * 0.98) ** 2) continue;
+        mask[index] = 1;
+        area++;
+      }
+      continue;
+    }
     const shape = shapeFromStoredAnnotation(annotation);
     if (shape.x2 === undefined || shape.y2 === undefined) continue;
     const minX = Math.max(0, Math.floor(Math.min(shape.x, shape.x2)));
@@ -165,13 +179,13 @@ export interface ManualDarkGrade {
 export function manualDarkGrade(
   annotations: readonly Pick<
     AnnotationRecord,
-    'imageId' | 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2'
+    'imageId' | 'defectId' | 'geomType' | 'x' | 'y' | 'x2' | 'y2' | 'maskRle'
   >[],
   settings: Settings = DEFAULT_SETTINGS,
 ): ManualDarkGrade {
   const byImage = new Map<number, typeof annotations>();
   for (const annotation of annotations) {
-    if (!isDarkDotDefect(annotation.defectId) || annotation.geomType !== 'box') continue;
+    if (!isDarkDotDefect(annotation.defectId) || (annotation.geomType !== 'box' && annotation.geomType !== 'mask')) continue;
     const list = byImage.get(annotation.imageId) ?? [];
     byImage.set(annotation.imageId, [...list, annotation]);
   }
@@ -180,6 +194,41 @@ export function manualDarkGrade(
     areaPct = Math.max(areaPct, combinedDarkAreaPct(imageAnnotations));
   }
   return { areaPct, defectId: gradeDarkDot(areaPct, settings) };
+}
+
+export function encodeMaskRle(indices: readonly number[]): string {
+  if (indices.length === 0) return '';
+  const sorted = [...new Set(indices)].sort((a, b) => a - b);
+  const runs: string[] = [];
+  let start = sorted[0]!;
+  let previous = start;
+  for (let i = 1; i < sorted.length; i++) {
+    const value = sorted[i]!;
+    if (value === previous + 1) {
+      previous = value;
+      continue;
+    }
+    runs.push(`${start}:${previous - start + 1}`);
+    start = previous = value;
+  }
+  runs.push(`${start}:${previous - start + 1}`);
+  return runs.join(',');
+}
+
+export function decodeMaskRle(rle: string): number[] {
+  const values: number[] = [];
+  for (const token of rle.split(',')) {
+    const [startText, lengthText] = token.split(':');
+    const start = Number(startText);
+    const length = Number(lengthText);
+    if (!Number.isInteger(start) || !Number.isInteger(length) || start < 0 || length <= 0) continue;
+    for (let offset = 0; offset < length; offset++) values.push(start + offset);
+  }
+  return values;
+}
+
+function maskAreaFromRle(rle: string): number {
+  return decodeMaskRle(rle).length;
 }
 
 /** Is the point inside the active display area of the normalized frame? */
@@ -217,7 +266,7 @@ export function describeAnnotation(annotation: {
   const hour = (6 + annotation.angleDeg / 30) % 12;
   const clock = hour < 1 ? hour + 12 : hour;
   const name = isDarkDotDefect(annotation.defectId) ? `암점 영역 → ${DEFECT_NAME[annotation.defectId]}` : DEFECT_NAME[annotation.defectId];
-  const area = isDarkDotDefect(annotation.defectId) && annotation.geomType === 'box' && annotation.areaRatio !== undefined
+  const area = isDarkDotDefect(annotation.defectId) && (annotation.geomType === 'box' || annotation.geomType === 'mask') && annotation.areaRatio !== undefined
     ? ` · 선택 ${annotation.areaRatio.toFixed(2)}%`
     : '';
   return `${name} · ${annotation.geomType}${area} · ${clock.toFixed(1)}시 · ${annotation.region} (r=${annotation.rRatio.toFixed(2)})`;

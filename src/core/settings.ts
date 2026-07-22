@@ -6,20 +6,45 @@
  * touching code.
  */
 export interface Settings {
+  readonly 'preprocessing.min_circle_confidence': number;
+  readonly 'preprocessing.min_fpcb_strength': number;
+  readonly 'preprocessing.max_clipping_ratio': number;
+  readonly 'preprocessing.min_blur_score': number;
+  readonly 'preprocessing.min_mean_luminance': number;
+  readonly 'preprocessing.max_mean_luminance': number;
+  readonly 'preprocessing.max_saturation_ratio': number;
   readonly 'dark_dot.small_max_pct': number;
   readonly 'dark_dot.medium_max_pct': number;
   readonly 'dark.residual_threshold': number;
   readonly 'bright.residual_threshold': number;
+  /** W pattern needs a lower white-on-white contrast floor than RGB patterns. */
+  readonly 'bright.w_residual_threshold': number;
   readonly 'blob.min_area_px': number;
   readonly 'line.min_aspect_ratio': number;
+  /** Relaxed aspect threshold used only by components substantially longer than the normal minimum. */
+  readonly 'line.thick_min_aspect_ratio': number;
   readonly 'line.min_length_ratio': number;
   readonly 'line.angle_tolerance_deg': number;
+  /** Minimum filled share between the first and last abnormal pixel of a projected line. */
+  readonly 'line.min_continuity_ratio': number;
+  readonly 'line.max_gap_ratio': number;
+  /** High-resolution projection pass is used when the source diameter exceeds this value. */
+  readonly 'line.native_min_diameter_px': number;
   readonly 'no_display.mean_luma_threshold': number;
   readonly 'no_display.partial_area_ratio': number;
   readonly 'region.center_max_r': number;
   readonly 'region.mid_max_r': number;
   /** A dot/line must appear in at least this many of R/G/B/W to be believed. */
   readonly 'pattern.min_confirmations': number;
+  /** Maximum normalized center distance for detections to count as the same cross-pattern defect. */
+  readonly 'pattern.position_tolerance_r': number;
+  /** Maximum axial orientation difference for cross-pattern Line confirmation. */
+  readonly 'pattern.line_angle_tolerance_deg': number;
+  readonly 'pattern.min_area_similarity': number;
+  readonly 'pattern.min_bbox_iou': number;
+  readonly 'pattern.dark_dot_min_confirmations': number;
+  readonly 'pattern.bright_dot_min_confirmations': number;
+  readonly 'pattern.line_min_confirmations': number;
   readonly 'knn.k': number;
   readonly 'knn.min_similarity': number;
   /** Below this many searchable training panels, kNN stays off and Rule decides alone. */
@@ -27,19 +52,38 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  'preprocessing.min_circle_confidence': 0.5,
+  'preprocessing.min_fpcb_strength': 3,
+  'preprocessing.max_clipping_ratio': 0.02,
+  'preprocessing.min_blur_score': 4,
+  'preprocessing.min_mean_luminance': 15,
+  'preprocessing.max_mean_luminance': 245,
+  'preprocessing.max_saturation_ratio': 0.25,
   'dark_dot.small_max_pct': 5,
   'dark_dot.medium_max_pct': 15,
   'dark.residual_threshold': 25,
   'bright.residual_threshold': 30,
+  'bright.w_residual_threshold': 20,
   'blob.min_area_px': 6,
   'line.min_aspect_ratio': 8,
+  'line.thick_min_aspect_ratio': 3.5,
   'line.min_length_ratio': 0.4,
   'line.angle_tolerance_deg': 20,
+  'line.min_continuity_ratio': 0.7,
+  'line.max_gap_ratio': 0.2,
+  'line.native_min_diameter_px': 600,
   'no_display.mean_luma_threshold': 15,
   'no_display.partial_area_ratio': 0.6,
   'region.center_max_r': 0.35,
   'region.mid_max_r': 0.75,
   'pattern.min_confirmations': 2,
+  'pattern.position_tolerance_r': 0.08,
+  'pattern.line_angle_tolerance_deg': 15,
+  'pattern.min_area_similarity': 0.2,
+  'pattern.min_bbox_iou': 0,
+  'pattern.dark_dot_min_confirmations': 2,
+  'pattern.bright_dot_min_confirmations': 1,
+  'pattern.line_min_confirmations': 1,
   'knn.k': 5,
   'knn.min_similarity': 0.75,
   'knn.min_train_panels': 10,
@@ -69,6 +113,77 @@ export interface SettingSpec {
  */
 export const SETTING_SPECS: readonly SettingSpec[] = [
   {
+    key: 'preprocessing.min_circle_confidence',
+    group: '전처리 품질',
+    label: '원 검출 최소 신뢰도',
+    hint: '원 피팅 잔차로 계산한 신뢰도가 이 값보다 낮으면 검수 대상으로 보냅니다.',
+    min: 0.1,
+    max: 0.95,
+    step: 0.05,
+    precision: 2,
+  },
+  {
+    key: 'preprocessing.min_fpcb_strength',
+    group: '전처리 품질',
+    label: 'FPCB 최소 신뢰도',
+    hint: 'FPCB 방향 신호가 이 robust-sigma 값보다 낮으면 수동 정렬 검수가 필요합니다.',
+    min: 0.5,
+    max: 20,
+    step: 0.5,
+    precision: 1,
+    unit: 'σ',
+  },
+  {
+    key: 'preprocessing.max_clipping_ratio',
+    group: '전처리 품질',
+    label: '최대 원 경계 잘림 비율',
+    hint: '사진 밖으로 벗어난 Active 원 둘레 비율이 이 값보다 크면 검수 대상으로 보냅니다.',
+    min: 0,
+    max: 0.5,
+    step: 0.01,
+    precision: 2,
+  },
+  {
+    key: 'preprocessing.min_blur_score',
+    group: '전처리 품질',
+    label: '최소 선명도 점수',
+    hint: 'Active 영역 Laplacian 분산이 이 값보다 낮으면 과도한 흐림으로 표시합니다.',
+    min: 0,
+    max: 500,
+    step: 1,
+    precision: 0,
+  },
+  {
+    key: 'preprocessing.min_mean_luminance',
+    group: '전처리 품질',
+    label: '유효 평균 휘도 하한',
+    hint: '전체 미점등 판정과 별개로 촬영 노출 검증에 사용하는 하한입니다.',
+    min: 0,
+    max: 120,
+    step: 1,
+    precision: 0,
+  },
+  {
+    key: 'preprocessing.max_mean_luminance',
+    group: '전처리 품질',
+    label: '유효 평균 휘도 상한',
+    hint: '평균 휘도가 이 값보다 높으면 과노출 가능성으로 검수 대상으로 보냅니다.',
+    min: 120,
+    max: 255,
+    step: 1,
+    precision: 0,
+  },
+  {
+    key: 'preprocessing.max_saturation_ratio',
+    group: '전처리 품질',
+    label: '최대 포화 비율',
+    hint: 'Active 픽셀 중 RGB가 모두 250 이상인 비율의 허용 상한입니다.',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    precision: 2,
+  },
+  {
     key: 'dark.residual_threshold',
     group: '검출 감도',
     label: '암부 잔차 임계',
@@ -89,6 +204,16 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     precision: 0,
   },
   {
+    key: 'bright.w_residual_threshold',
+    group: '검출 감도',
+    label: 'W 명부 잔차 임계',
+    hint: 'W 점등에서 정상 White보다 더 밝은 명점·명선을 찾는 기준. 낮출수록 W 패턴 명부를 더 민감하게 검출합니다.',
+    min: 1,
+    max: 120,
+    step: 1,
+    precision: 0,
+  },
+  {
     key: 'blob.min_area_px',
     group: '검출 감도',
     label: '최소 검출 면적',
@@ -100,16 +225,61 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     unit: 'px',
   },
   {
-    key: 'pattern.min_confirmations',
+    key: 'pattern.position_tolerance_r',
     group: '검출 감도',
-    label: '패턴 교차 확인 수',
-    hint: '점·선 불량이 R/G/B/W 중 몇 개에서 보여야 인정할지. 1이면 교차 확인을 끕니다.',
+    label: '패턴 위치 일치 허용거리',
+    hint: 'R/G/B/W 검출 중심이 Active 반지름 대비 이 거리 안에 있어야 같은 불량으로 확인합니다.',
+    min: 0.01,
+    max: 0.3,
+    step: 0.01,
+    precision: 2,
+  },
+  {
+    key: 'pattern.line_angle_tolerance_deg',
+    group: '검출 감도',
+    label: '패턴 Line 방향 일치각',
+    hint: '패턴 간 Line 주축 방향 차이가 이 값 이하여야 같은 Line으로 확인합니다.',
+    min: 1,
+    max: 45,
+    step: 1,
+    precision: 0,
+    unit: '°',
+  },
+  {
+    key: 'pattern.min_area_similarity',
+    group: '검출 감도',
+    label: '패턴 면적 유사도 하한',
+    hint: '같은 위치 후보의 작은 면적/큰 면적 비율입니다. 패턴별 발현 크기 차이를 허용하려면 낮춥니다.',
+    min: 0,
+    max: 1,
+    step: 0.05,
+    precision: 2,
+  },
+  {
+    key: 'pattern.min_bbox_iou',
+    group: '검출 감도',
+    label: '패턴 Box IoU 하한',
+    hint: '정합 후 경계 상자 겹침 하한입니다. 0이면 중심거리만 사용하고, Golden 정합이 검증된 뒤 올립니다.',
+    min: 0,
+    max: 0.9,
+    step: 0.05,
+    precision: 2,
+  },
+  ...([
+    ['pattern.dark_dot_min_confirmations', '암점 교차 확인 수', '암점은 합산 면적 등급에 포함되기 전 필요한 패턴 수입니다.'],
+    ['pattern.bright_dot_min_confirmations', '명점 교차 확인 수', '특정 subpixel 패턴에서만 보이는 명점을 허용하려면 1로 둡니다.'],
+    ['pattern.line_min_confirmations', 'Line 교차 확인 수', '명선·암선이 한 패턴에서만 발현될 수 있으면 1로 둡니다.'],
+  ] as const).map(([key, label, hint]) => ({
+    key,
+    group: '검출 감도',
+    label,
+    hint,
     min: 1,
     max: 4,
     step: 1,
     precision: 0,
     unit: '개',
-  },
+  })),
 
   {
     key: 'dark_dot.small_max_pct',
@@ -145,6 +315,16 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     precision: 1,
   },
   {
+    key: 'line.thick_min_aspect_ratio',
+    group: 'Line 판정',
+    label: '두꺼운 Line 최소 종횡비',
+    hint: '최소 길이의 1.5배 이상인 긴 성분에 적용합니다. 두꺼운 명선·암선을 놓치면 낮추고, 긴 얼룩이 Line으로 잡히면 올립니다.',
+    min: 1.5,
+    max: 12,
+    step: 0.5,
+    precision: 1,
+  },
+  {
     key: 'line.min_length_ratio',
     group: 'Line 판정',
     label: '최소 길이 (지름 대비)',
@@ -164,6 +344,37 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     step: 1,
     precision: 0,
     unit: '°',
+  },
+  {
+    key: 'line.min_continuity_ratio',
+    group: 'Line 판정',
+    label: 'Line 최소 연속성',
+    hint: '선 시작~끝 구간 중 실제 이상 픽셀이 차지해야 하는 최소 비율입니다.',
+    min: 0.2,
+    max: 1,
+    step: 0.05,
+    precision: 2,
+  },
+  {
+    key: 'line.max_gap_ratio',
+    group: 'Line 판정',
+    label: 'Line 최대 끊김 비율',
+    hint: '끊어진 Line 내부에서 허용하는 빈 구간 비율입니다.',
+    min: 0,
+    max: 0.8,
+    step: 0.05,
+    precision: 2,
+  },
+  {
+    key: 'line.native_min_diameter_px',
+    group: 'Line 판정',
+    label: '고해상도 Line 분석 시작 지름',
+    hint: '원본 Active 지름이 이 값 이상이면 원본 기반 고해상도 projection 보조 검출을 실행합니다.',
+    min: 300,
+    max: 2000,
+    step: 50,
+    precision: 0,
+    unit: 'px',
   },
 
   {
@@ -243,6 +454,7 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
 ];
 
 export const SETTING_GROUPS: readonly string[] = [
+  '전처리 품질',
   '검출 감도',
   '암점 등급',
   'Line 판정',
@@ -274,11 +486,27 @@ export function sanitizeSettings(raw: unknown): { settings: Settings; repaired: 
     if (clamped !== value) repaired.push(`${spec.label}: ${value} → ${clamped} (범위 밖)`);
     out[spec.key] = clamped;
   }
+  // Legacy global confirmation count is retained in JSON/DB for migration but
+  // hidden from the UI now that each defect family has its own setting.
+  const legacyConfirmations = input['pattern.min_confirmations'];
+  if (typeof legacyConfirmations === 'number' && Number.isFinite(legacyConfirmations)) {
+    out['pattern.min_confirmations'] = Math.min(4, Math.max(1, legacyConfirmations));
+  }
 
   if (out['dark_dot.medium_max_pct']! <= out['dark_dot.small_max_pct']!) {
     const fixed = Math.min(50, out['dark_dot.small_max_pct']! + 0.1);
     repaired.push(`암점 中 상한이 小 상한 이하 → ${fixed.toFixed(1)}%로 보정`);
     out['dark_dot.medium_max_pct'] = fixed;
+  }
+  if (out['preprocessing.max_mean_luminance']! <= out['preprocessing.min_mean_luminance']!) {
+    const fixed = Math.min(255, out['preprocessing.min_mean_luminance']! + 1);
+    repaired.push(`평균 휘도 상한이 하한 이하 → ${fixed.toFixed(0)}로 보정`);
+    out['preprocessing.max_mean_luminance'] = fixed;
+  }
+  if (out['line.thick_min_aspect_ratio']! > out['line.min_aspect_ratio']!) {
+    const fixed = out['line.min_aspect_ratio']!;
+    repaired.push(`두꺼운 Line 최소 종횡비가 일반 Line 기준 초과 → ${fixed.toFixed(1)}로 보정`);
+    out['line.thick_min_aspect_ratio'] = fixed;
   }
   if (out['region.mid_max_r']! <= out['region.center_max_r']!) {
     const fixed = Math.min(0.98, out['region.center_max_r']! + 0.01);

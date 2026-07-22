@@ -21,17 +21,27 @@ import { otsuThresholdMasked } from './otsu';
  *
  * Robustness comes in two layers:
  *
- *   1. Dark pixels are excluded up front by an Otsu split, but only when the
- *      dark fraction is large enough for the histogram to actually be bimodal.
- *      This survives a defect covering most of the panel, where any
- *      residual-reweighting scheme would break down.
+ *   1. A genuine Otsu split excludes the defect-side intensity class up front.
+ *      Usually that is the lower (dark) class. When a small bright upper class
+ *      sits on an already-lit lower class, it is instead recognized as a thick
+ *      bright defect and excluded. This survives both large dark areas and
+ *      bright lines too wide for residual reweighting to reject by itself.
  *   2. Iteratively reweighted least squares with Tukey's biweight then
  *      suppresses the remaining outliers, chiefly bright dots and lines.
  */
 /** Class-mean separation, in pooled within-class sigmas, above which we split. */
 const BIMODAL_SEPARATION = 4;
+/** A high-intensity class this small is allowed to be treated as a bright defect. */
+const BRIGHT_TAIL_MAX_FRACTION = 0.25;
+/** Its lower class must itself be lit, not a majority-dark partial no-display. */
+const LIT_LOWER_MIN_RATIO = 0.45;
 
-export function fitBackgroundSurface(gray: Gray, mask: Mask, iterations = 4): Gray {
+export function fitBackgroundSurface(
+  gray: Gray,
+  mask: Mask,
+  iterations = 4,
+  defectPolarity: 'auto' | 'bright' = 'auto',
+): Gray {
   const { width: w, height: h } = gray;
 
   let active = 0;
@@ -44,9 +54,17 @@ export function fitBackgroundSurface(gray: Gray, mask: Mask, iterations = 4): Gr
   // Keying this on separation rather than on the dark pixel count matters: any
   // fixed "at least N% dark" rule puts a discontinuity in the middle of the
   // 암점 大 range, where a defect is big enough to bias the fit but not big
-  // enough to trip the rule.
+  // enough to trip the rule. Otsu does not say which class is the defect,
+  // though. A thick bright line creates the opposite split: the broad lower
+  // class is the lit panel and the narrow upper class is the defect.
   const otsu = otsuThresholdMasked(gray, mask);
-  const floor = otsu.separation > BIMODAL_SEPARATION ? otsu.threshold : -1;
+  const bimodal = otsu.separation > BIMODAL_SEPARATION;
+  const upperIsBrightDefect =
+    bimodal &&
+    otsu.upperFraction <= BRIGHT_TAIL_MAX_FRACTION &&
+    (defectPolarity === 'bright' || otsu.lowerMean >= otsu.upperMean * LIT_LOWER_MIN_RATIO);
+  const floor = bimodal && !upperIsBrightDefect ? otsu.threshold : -1;
+  const ceiling = upperIsBrightDefect ? otsu.threshold : 255;
 
   // Subsample: a quadratic has six unknowns and tens of thousands of samples
   // already over-determine it.
@@ -59,7 +77,7 @@ export function fitBackgroundSurface(gray: Gray, mask: Mask, iterations = 4): Gr
       const i = y * w + x;
       if (mask.data[i] === 0) continue;
       const v = gray.data[i];
-      if (v <= floor) continue;
+      if (v <= floor || v > ceiling) continue;
       xs.push((x - w / 2) / (w / 2));
       ys.push((y - h / 2) / (h / 2));
       zs.push(v);

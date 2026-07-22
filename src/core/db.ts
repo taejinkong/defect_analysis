@@ -1,22 +1,37 @@
 import type {
   AnnotationRecord,
+  DetectionResultRecord,
   EmbeddingRecord,
   ImageRecord,
   NewAnnotation,
   NewEmbedding,
+  NewDetectionResult,
   NewImage,
   NewPanel,
+  NewPanelDecision,
+  NewPreprocessingResult,
+  NewReview,
+  NewThresholdConfig,
+  PanelDecisionRecord,
   PanelRecord,
+  PreprocessingResultRecord,
   Repository,
+  ReviewRecord,
+  ThresholdConfigRecord,
 } from './records';
 
 const DB_NAME = 'defect_analysis';
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 
 const PANELS = 'panels';
 const IMAGES = 'images';
 const ANNOTATIONS = 'annotations';
 const EMBEDDINGS = 'embeddings';
+const PREPROCESSING_RESULTS = 'preprocessingResults';
+const DETECTION_RESULTS = 'detectionResults';
+const PANEL_DECISIONS = 'panelDecisions';
+const THRESHOLD_CONFIGS = 'thresholdConfigs';
+const REVIEWS = 'reviews';
 
 /**
  * IndexedDB-backed repository.
@@ -98,6 +113,66 @@ export class IndexedDbRepository implements Repository {
     await done(tx);
   }
 
+  async putPreprocessingResult(result: NewPreprocessingResult): Promise<number> {
+    return this.replaceByIndex(PREPROCESSING_RESULTS, 'imageId', result.imageId, result);
+  }
+
+  async listPreprocessingResults(imageId?: number): Promise<PreprocessingResultRecord[]> {
+    if (imageId === undefined) return this.all<PreprocessingResultRecord>(PREPROCESSING_RESULTS);
+    return this.byIndex<PreprocessingResultRecord>(PREPROCESSING_RESULTS, 'imageId', imageId);
+  }
+
+  async replaceDetectionResults(panelId: number, results: NewDetectionResult[]): Promise<void> {
+    const tx = this.db.transaction(DETECTION_RESULTS, 'readwrite');
+    const store = tx.objectStore(DETECTION_RESULTS);
+    const existing = await request<DetectionResultRecord[]>(store.index('panelId').getAll(panelId));
+    for (const row of existing) store.delete(row.id);
+    for (const result of results) store.add(result as object);
+    await done(tx);
+  }
+
+  async listDetectionResults(panelId?: number): Promise<DetectionResultRecord[]> {
+    if (panelId === undefined) return this.all<DetectionResultRecord>(DETECTION_RESULTS);
+    return this.byIndex<DetectionResultRecord>(DETECTION_RESULTS, 'panelId', panelId);
+  }
+
+  async putPanelDecision(decision: NewPanelDecision): Promise<number> {
+    return this.replaceByIndex(PANEL_DECISIONS, 'panelId', decision.panelId, decision);
+  }
+
+  async listPanelDecisions(panelId?: number): Promise<PanelDecisionRecord[]> {
+    if (panelId === undefined) return this.all<PanelDecisionRecord>(PANEL_DECISIONS);
+    return this.byIndex<PanelDecisionRecord>(PANEL_DECISIONS, 'panelId', panelId);
+  }
+
+  async putThresholdConfig(config: NewThresholdConfig): Promise<number> {
+    const tx = this.db.transaction(THRESHOLD_CONFIGS, 'readwrite');
+    const store = tx.objectStore(THRESHOLD_CONFIGS);
+    if (config.active) {
+      const rows = await request<ThresholdConfigRecord[]>(store.getAll());
+      for (const row of rows) {
+        if (row.active) store.put({ ...row, active: false, updatedAt: config.updatedAt });
+      }
+    }
+    const existing = await request<ThresholdConfigRecord | undefined>(store.index('version').get(config.version));
+    const key = existing
+      ? await request<IDBValidKey>(store.put({ ...config, id: existing.id } as object))
+      : await request<IDBValidKey>(store.add(config as object));
+    await done(tx);
+    return key as number;
+  }
+
+  listThresholdConfigs = (): Promise<ThresholdConfigRecord[]> => this.all<ThresholdConfigRecord>(THRESHOLD_CONFIGS);
+
+  async putReview(review: NewReview): Promise<number> {
+    return this.replaceByIndex(REVIEWS, 'panelId', review.panelId, review);
+  }
+
+  async listReviews(panelId?: number): Promise<ReviewRecord[]> {
+    if (panelId === undefined) return this.all<ReviewRecord>(REVIEWS);
+    return this.byIndex<ReviewRecord>(REVIEWS, 'panelId', panelId);
+  }
+
   /**
    * Remove a panel and everything hanging off it.
    *
@@ -105,24 +180,61 @@ export class IndexedDbRepository implements Repository {
    * annotations pointing at an image that no longer exists.
    */
   async deletePanel(id: number): Promise<void> {
-    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS], 'readwrite');
+    const tx = this.db.transaction(
+      [
+        PANELS,
+        IMAGES,
+        ANNOTATIONS,
+        EMBEDDINGS,
+        PREPROCESSING_RESULTS,
+        DETECTION_RESULTS,
+        PANEL_DECISIONS,
+        REVIEWS,
+      ],
+      'readwrite',
+    );
     const images = await request<ImageRecord[]>(tx.objectStore(IMAGES).index('panelId').getAll(id));
     for (const image of images) {
       const annotations = await request<AnnotationRecord[]>(
         tx.objectStore(ANNOTATIONS).index('imageId').getAll(image.id),
       );
       for (const annotation of annotations) tx.objectStore(ANNOTATIONS).delete(annotation.id);
+      const preprocessing = await request<PreprocessingResultRecord[]>(
+        tx.objectStore(PREPROCESSING_RESULTS).index('imageId').getAll(image.id),
+      );
+      for (const result of preprocessing) tx.objectStore(PREPROCESSING_RESULTS).delete(result.id);
       tx.objectStore(IMAGES).delete(image.id);
     }
     const embeddings = await request<EmbeddingRecord[]>(tx.objectStore(EMBEDDINGS).index('panelId').getAll(id));
     for (const embedding of embeddings) tx.objectStore(EMBEDDINGS).delete(embedding.id);
+    const detections = await request<DetectionResultRecord[]>(
+      tx.objectStore(DETECTION_RESULTS).index('panelId').getAll(id),
+    );
+    for (const result of detections) tx.objectStore(DETECTION_RESULTS).delete(result.id);
+    const decisions = await request<PanelDecisionRecord[]>(
+      tx.objectStore(PANEL_DECISIONS).index('panelId').getAll(id),
+    );
+    for (const decision of decisions) tx.objectStore(PANEL_DECISIONS).delete(decision.id);
+    const reviews = await request<ReviewRecord[]>(tx.objectStore(REVIEWS).index('panelId').getAll(id));
+    for (const review of reviews) tx.objectStore(REVIEWS).delete(review.id);
     tx.objectStore(PANELS).delete(id);
     await done(tx);
   }
 
   async clear(): Promise<void> {
-    const tx = this.db.transaction([PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS], 'readwrite');
-    for (const name of [PANELS, IMAGES, ANNOTATIONS, EMBEDDINGS]) tx.objectStore(name).clear();
+    const stores = [
+      PANELS,
+      IMAGES,
+      ANNOTATIONS,
+      EMBEDDINGS,
+      PREPROCESSING_RESULTS,
+      DETECTION_RESULTS,
+      PANEL_DECISIONS,
+      THRESHOLD_CONFIGS,
+      REVIEWS,
+    ];
+    const tx = this.db.transaction(stores, 'readwrite');
+    for (const name of stores) tx.objectStore(name).clear();
     await done(tx);
   }
 
@@ -154,6 +266,21 @@ export class IndexedDbRepository implements Repository {
     const rows = await request<T[]>(tx.objectStore(storeName).index(indexName).getAll(key));
     await done(tx);
     return rows;
+  }
+
+  private async replaceByIndex<T>(
+    storeName: string,
+    indexName: string,
+    indexValue: IDBValidKey,
+    value: T,
+  ): Promise<number> {
+    const tx = this.db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const existing = await request<{ id: number }[]>(store.index(indexName).getAll(indexValue));
+    for (const row of existing) store.delete(row.id);
+    const key = await request<IDBValidKey>(store.add(value as object));
+    await done(tx);
+    return key as number;
   }
 
   private async run(
@@ -194,6 +321,35 @@ function upgrade(db: IDBDatabase): void {
     // searchable panels is small, so listEmbeddings loads all and filters in JS.
     const embeddings = db.createObjectStore(EMBEDDINGS, { keyPath: 'id', autoIncrement: true });
     embeddings.createIndex('panelId', 'panelId');
+  }
+  // v3 adds append/replace evidence stores. Existing v1/v2 rows stay untouched;
+  // the app populates evidence only when a panel is analysed again.
+  if (!db.objectStoreNames.contains(PREPROCESSING_RESULTS)) {
+    const store = db.createObjectStore(PREPROCESSING_RESULTS, { keyPath: 'id', autoIncrement: true });
+    store.createIndex('imageId', 'imageId');
+    store.createIndex('status', 'status');
+  }
+  if (!db.objectStoreNames.contains(DETECTION_RESULTS)) {
+    const store = db.createObjectStore(DETECTION_RESULTS, { keyPath: 'id', autoIncrement: true });
+    store.createIndex('panelId', 'panelId');
+    store.createIndex('imageId', 'imageId');
+    store.createIndex('detectorId', 'detectorId');
+  }
+  if (!db.objectStoreNames.contains(PANEL_DECISIONS)) {
+    const store = db.createObjectStore(PANEL_DECISIONS, { keyPath: 'id', autoIncrement: true });
+    store.createIndex('panelId', 'panelId');
+    store.createIndex('reviewStatus', 'reviewStatus');
+  }
+  if (!db.objectStoreNames.contains(THRESHOLD_CONFIGS)) {
+    const store = db.createObjectStore(THRESHOLD_CONFIGS, { keyPath: 'id', autoIncrement: true });
+    store.createIndex('version', 'version', { unique: true });
+  }
+  // v4 stores the engineer's correction separately from the immutable automatic
+  // panel decision. Re-review replaces only the review row, never the evidence.
+  if (!db.objectStoreNames.contains(REVIEWS)) {
+    const store = db.createObjectStore(REVIEWS, { keyPath: 'id', autoIncrement: true });
+    store.createIndex('panelId', 'panelId');
+    store.createIndex('status', 'status');
   }
 }
 

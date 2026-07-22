@@ -61,6 +61,18 @@ describe('overview', () => {
     expect(o.needsReview).toBe(1);
     expect(o.topDefect).toBe(DEFECT.BRIGHT_DOT);
   });
+
+  it('separates real/synthetic, preprocessing failure and reviewer agreement KPIs', () => {
+    const o = overview([
+      panel({ imageCount: 4, synthetic: false, reviewerAgreement: true }),
+      panel({ panelId: 2, imageCount: 3, synthetic: true, preprocessingFailed: true, reviewerAgreement: false }),
+    ]);
+    expect(o.totalImages).toBe(7);
+    expect(o.realPanels).toBe(1);
+    expect(o.syntheticPanels).toBe(1);
+    expect(o.preprocessingFailures).toBe(1);
+    expect(o.reviewerAgreementPct).toBe(50);
+  });
 });
 
 describe('defect ratio', () => {

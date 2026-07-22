@@ -3,6 +3,8 @@ import {
   ACTIVE_AREA_PX,
   buildAnnotation,
   combinedDarkAreaPct,
+  decodeMaskRle,
+  encodeMaskRle,
   insideActiveArea,
   judgeFromLabels,
   manualDarkGrade,
@@ -193,6 +195,18 @@ describe('manual dark-area grading', () => {
   it('does not double-count overlapping selections', () => {
     const one = box(1, 190, 190, 290, 290);
     expect(combinedDarkAreaPct([one, one])).toBeCloseTo(combinedDarkAreaPct([one]), 8);
+  });
+
+  it('unions segmentation masks exactly instead of using their bounding boxes', () => {
+    const center = FRAME_CENTER * 512 + FRAME_CENTER;
+    const maskRle = encodeMaskRle([center, center + 1, center + 2, center + 512]);
+    expect(decodeMaskRle(maskRle)).toEqual([center, center + 1, center + 2, center + 512]);
+    const annotation = {
+      ...box(1, 0, 0, 100, 100),
+      geomType: 'mask' as const,
+      maskRle,
+    };
+    expect(combinedDarkAreaPct([annotation])).toBeCloseTo((4 / ACTIVE_AREA_PX) * 100, 8);
   });
 
   it('uses the largest pattern total instead of summing the same defect across patterns', () => {

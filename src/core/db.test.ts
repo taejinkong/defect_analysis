@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { IndexedDbRepository } from './db';
 import type { NewAnnotation, NewImage, NewPanel, Repository } from './records';
 import { exportLabels, hasPixels, importLabels } from './transfer';
+import { createThresholdConfig } from './thresholdConfig';
 
 let dbSeq = 0;
 
@@ -175,6 +176,153 @@ describe('IndexedDbRepository', () => {
     expect(await repo.listImages()).toHaveLength(0);
     expect(await repo.listAnnotations()).toHaveLength(0);
     expect(await repo.listEmbeddings()).toHaveLength(0);
+    expect(await repo.listPreprocessingResults()).toHaveLength(0);
+    expect(await repo.listDetectionResults()).toHaveLength(0);
+    expect(await repo.listPanelDecisions()).toHaveLength(0);
+    expect(await repo.listThresholdConfigs()).toHaveLength(0);
+    expect(await repo.listReviews()).toHaveLength(0);
+  });
+});
+
+describe('schema v3 evidence and migration', () => {
+  it('stores replaceable preprocessing, detection, decision and threshold evidence', async () => {
+    const repo = await freshRepo();
+    const panelId = await repo.addPanel(panel());
+    const imageId = await repo.addImage(image(panelId));
+    const now = '2026-07-22T00:00:00.000Z';
+
+    await repo.putPreprocessingResult({
+      imageId,
+      thresholdVersion: '1.0.0',
+      schemaVersion: 3,
+      createdAt: now,
+      updatedAt: now,
+      status: 'PASS',
+      reviewReasons: [],
+      metricsVersion: '1.0.0',
+      activeAreaDetected: true,
+      centerX: 320,
+      centerY: 320,
+      radius: 240,
+      centerOffsetRatio: 0,
+      radiusConfidence: 0.9,
+      circularity: 0.99,
+      fpcbAlignmentConfidence: 10,
+      rotationDeg: 0,
+      clippingRatio: 0,
+      blurScore: 30,
+      meanLuminance: 190,
+      luminanceStdDev: 4,
+      saturationRatio: 0,
+      activePixelCoverage: 0.96,
+      patternCompleteness: 1,
+    });
+    await repo.replaceDetectionResults(panelId, [{
+      panelId,
+      imageId,
+      detectorId: 'bright-dot',
+      detectorName: 'Bright Dot Detector',
+      detectorVersion: '2.0.0',
+      thresholdVersion: '1.0.0',
+      sourcePattern: 'R',
+      kind: 'bright-dot',
+      x: 256,
+      y: 256,
+      xRatio: 0,
+      yRatio: 0,
+      rRatio: 0,
+      angleDeg: 0,
+      region: 'center',
+      bbox: [250, 250, 262, 262],
+      centroid: [256, 256],
+      maskAreaPx: 20,
+      defectAreaRatio: 0.001,
+      meanContrast: 40,
+      peakContrast: 60,
+      confidence: 0.9,
+      ruleResult: 'D004',
+      similarityResult: null,
+      finalSuggestedLabel: 'D004',
+      reviewStatus: 'pending',
+      reviewReasons: [],
+      schemaVersion: 3,
+      createdAt: now,
+      updatedAt: now,
+    }]);
+    await repo.putPanelDecision({
+      panelId,
+      thresholdVersion: '1.0.0',
+      detectorVersion: '2.0.0',
+      ruleResult: 'D004',
+      ruleConfidence: 0.6,
+      knnResult: null,
+      knnSimilarityScore: null,
+      agreementStatus: 'NOT_AVAILABLE',
+      finalSuggestedLabel: 'D004',
+      finalConfidence: 0.6,
+      reviewStatus: 'pending',
+      reviewReasons: [],
+      processingMs: 12,
+      schemaVersion: 3,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await repo.putReview({
+      panelId,
+      originalDecisionId: null,
+      reviewerFinalLabel: 'D004',
+      reviewer: 'reviewer',
+      notes: 'confirmed',
+      reviewDate: now,
+      status: 'approved',
+      reviewReasons: [],
+      schemaVersion: 4,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const config = createThresholdConfig(undefined, '1.0.0', 'admin', now);
+    await repo.putThresholdConfig({
+      version: config.version,
+      active: true,
+      config,
+      schemaVersion: 3,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    expect(await repo.listPreprocessingResults(imageId)).toHaveLength(1);
+    expect(await repo.listDetectionResults(panelId)).toHaveLength(1);
+    expect(await repo.listPanelDecisions(panelId)).toHaveLength(1);
+    expect((await repo.listReviews(panelId))[0]!.notes).toBe('confirmed');
+    expect((await repo.listThresholdConfigs())[0]!.active).toBe(true);
+  });
+
+  it('upgrades an old v2 database without deleting its panel rows', async () => {
+    const name = `migration_${dbSeq++}`;
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(name, 2);
+      open.onupgradeneeded = () => {
+        open.result.createObjectStore('panels', { keyPath: 'id', autoIncrement: true });
+      };
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction('panels', 'readwrite');
+        tx.objectStore('panels').add(panel({ panelCode: 'LEGACY' }));
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+
+    const migrated = await IndexedDbRepository.open(name);
+    expect((await migrated.listPanels())[0]!.panelCode).toBe('LEGACY');
+    expect(await migrated.listPreprocessingResults()).toEqual([]);
+    expect(await migrated.listDetectionResults()).toEqual([]);
+    expect(await migrated.listPanelDecisions()).toEqual([]);
+    expect(await migrated.listThresholdConfigs()).toEqual([]);
   });
 });
 

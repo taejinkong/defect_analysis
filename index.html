@@ -25,6 +25,7 @@
           <button type="button" class="app-nav-item" data-view="intake">이미지 등록</button>
           <button type="button" class="app-nav-item" data-view="status">분석 현황</button>
           <button type="button" class="app-nav-item" data-view="panels">패널 목록</button>
+          <button type="button" class="app-nav-item" data-view="review">검수 큐</button>
           <button type="button" class="app-nav-item" data-view="dashboard">분석정리</button>
           <div class="app-nav-group">설정</div>
           <button type="button" class="app-nav-item" data-view="settings">임계값 조절</button>
@@ -41,7 +42,17 @@
             <h1>Watch Display 불량 분석</h1>
             <p class="app-subtitle">전처리 · Rule 검출 · 라벨링 · kNN 매칭</p>
           </div>
-          <span class="app-badge">오프라인 · 로컬 전용</span>
+          <div class="topbar-actions">
+            <label class="role-select">역할
+              <select id="user-role">
+                <option value="admin">Admin</option>
+                <option value="reviewer">Reviewer</option>
+                <option value="viewer">Viewer</option>
+              </select>
+              <span title="로컬 화면 모드이며 사용자 인증 기능이 아닙니다.">Workflow only</span>
+            </label>
+            <span class="app-badge">오프라인 · 로컬 전용</span>
+          </div>
         </header>
 
         <main>
@@ -95,6 +106,7 @@
         <button type="button" id="approve-all" class="ghost">일괄 승인</button>
         <button type="button" id="dashboard" class="ghost">분석정리</button>
         <button type="button" id="export" class="ghost">라벨 내보내기</button>
+        <button type="button" id="export-diagnostics" class="ghost">진단 JSON</button>
         <button type="button" id="import" class="ghost">라벨 가져오기</button>
         <button type="button" id="wipe" class="ghost">전체 삭제</button>
         <input type="file" id="import-input" accept="application/json,.json" hidden />
@@ -126,6 +138,19 @@
         </div>
       </div>
 
+      <div class="view" id="view-review" hidden>
+        <section class="review-queue">
+          <div class="review-head">
+            <div>
+              <h2>Engineer 검수 큐</h2>
+              <p>전처리 품질, Rule·kNN 충돌, 낮은 신뢰도 등 명시적 사유가 있는 패널입니다.</p>
+            </div>
+            <span class="badge warn" id="review-count">0건</span>
+          </div>
+          <div id="review-list"></div>
+        </section>
+      </div>
+
       <div class="view" id="view-settings" hidden>
         <div id="settings-mount"></div>
       </div>
@@ -153,6 +178,14 @@
             <figcaption>정규화 프레임 512×512 · FPCB 6시 · 여기에 라벨을 그립니다</figcaption>
             <canvas id="frame-canvas" class="labelable"></canvas>
           </figure>
+          <figure class="stage">
+            <figcaption>암부 잔차 · 붉을수록 Black 후보가 강함</figcaption>
+            <canvas id="dark-residual-canvas"></canvas>
+          </figure>
+          <figure class="stage">
+            <figcaption>명부 잔차 · 밝을수록 White 후보가 강함</figcaption>
+            <canvas id="bright-residual-canvas"></canvas>
+          </figure>
         </div>
 
         <section class="labeling">
@@ -167,12 +200,24 @@
                 <option value="box">박스 (드래그)</option>
               </select>
             </label>
-            <span class="label-hint">정규화 프레임 위에 그리세요. 암점은 박스로 모든 영역을 선택하면 합산 면적으로 등급이 자동 결정됩니다.</span>
+            <span class="label-hint">정규화 프레임 위에 그리세요. 암점은 박스로 모든 영역을 둘러싸면 내부 Black residual이 마스크로 정제되고 합집합 면적으로 등급이 자동 결정됩니다.</span>
           </div>
           <ul class="label-list" id="label-list"></ul>
         </section>
 
         <div class="controls">
+          <div class="control-row mapping-controls">
+            <label>패턴 재지정
+              <select id="map-pattern">
+                <option value="R">R</option><option value="G">G</option><option value="B">B</option><option value="W">W</option>
+              </select>
+            </label>
+            <label>패널에 합치기
+              <select id="map-panel"></select>
+            </label>
+            <button type="button" id="apply-mapping" class="ghost">매핑 적용</button>
+            <button type="button" id="undo-mapping" class="ghost">매핑 되돌리기</button>
+          </div>
           <div class="control-row">
             <label for="rotation">회전각 <span id="rotation-value">0.0°</span></label>
             <input type="range" id="rotation" min="0" max="359.5" step="0.5" value="0" />

@@ -3,7 +3,10 @@ import { FRAME_CENTER, FRAME_RADIUS, PATTERNS } from './types';
 import { angleFromOffset } from './geometry';
 import type { Detection } from './defects';
 
-export const FEATURE_VERSION = 'v1';
+// Black/White physical-signal masks replaced the driven-channel masks in v2.
+// Old embeddings must never be compared with descriptors built from the new
+// masks, even though the vector dimensions are unchanged.
+export const FEATURE_VERSION = 'v2';
 
 const RINGS = 16;
 const SECTORS = 24;

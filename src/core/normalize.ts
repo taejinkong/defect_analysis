@@ -44,6 +44,34 @@ export function normalizeFrame(src: Rgba, circle: Circle, rotationDeg: number): 
   return { image: out, activeMask, activeAreaPx };
 }
 
+/**
+ * Higher-resolution canonical frame used only by the projection Line detector.
+ * Coordinates are mapped back to the 512 frame before evidence is stored, so
+ * dashboards and manual labels retain one stable coordinate system.
+ */
+export function normalizeLineFrame(
+  src: Rgba,
+  circle: Circle,
+  rotationDeg: number,
+  requestedSize = Math.min(1024, Math.max(FRAME_SIZE, Math.round(circle.r * 2))),
+): NormalizedFrame {
+  const size = Math.max(FRAME_SIZE, Math.round(requestedSize));
+  const center = size / 2;
+  const radius = center - 6;
+  const out = createRgba(size, size);
+  const scale = circle.r / radius;
+  for (let v = 0; v < size; v++) {
+    for (let u = 0; u < size; u++) {
+      const p = rotateClockwise(u - center, v - center, -rotationDeg);
+      sampleRgba(src, circle.cx + p.x * scale, circle.cy + p.y * scale, out.data, (v * size + u) * 4);
+    }
+  }
+  const activeMask = circleMask(size, size, center, center, radius * ACTIVE_MASK_SHRINK);
+  let activeAreaPx = 0;
+  for (const value of activeMask.data) activeAreaPx += value;
+  return { image: out, activeMask, activeAreaPx };
+}
+
 /** Map a point from source-image coordinates into the normalized frame. */
 export function sourceToFrame(
   circle: Circle,

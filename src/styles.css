@@ -400,6 +400,29 @@ code {
   justify-content: flex-end;
   flex-wrap: wrap;
 }
+.mapping-controls {
+  flex-direction: row;
+  align-items: end;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.mapping-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mapping-controls select,
+.role-select select {
+  font: inherit;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+}
 
 /* ---------------------------------------------------------- settings panel */
 
@@ -444,6 +467,48 @@ code {
   font-size: 12.5px;
   line-height: 1.6;
   max-width: 90ch;
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.profile-grid .settings-actions,
+.profile-grid > .settings-note {
+  grid-column: 1 / -1;
+}
+
+.profile-grid label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 7px 0;
+}
+
+.profile-grid input[type='text'],
+.profile-grid input[type='number'],
+.profile-grid select {
+  min-width: 0;
+  width: 150px;
+}
+
+.profile-range {
+  display: grid;
+  grid-template-columns: 24px repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.profile-range input[type='number'] {
+  width: 100%;
+}
+
+.danger-text {
+  color: #b42318;
 }
 .settings-body {
   margin-top: 16px;
@@ -1402,6 +1467,60 @@ canvas.labelable {
   border: 1px solid #d3e2fb;
   padding: 5px 12px;
   border-radius: 999px;
+}
+.topbar-actions,
+.role-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.role-select {
+  color: var(--muted);
+  font-size: 12px;
+}
+.review-queue {
+  display: grid;
+  gap: 14px;
+}
+.review-head,
+.review-item-head,
+.review-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.review-head h2,
+.review-head p {
+  margin: 0;
+}
+.review-head p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+#review-list {
+  display: grid;
+  gap: 12px;
+}
+.review-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warn);
+  border-radius: 10px;
+  padding: 15px 17px;
+}
+.review-item p {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 8px 0 0;
+}
+.review-patterns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 
 /* main content fills the shell rather than centering in a narrow column */

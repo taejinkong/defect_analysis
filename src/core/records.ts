@@ -1,11 +1,16 @@
 import type { Pattern } from './types';
 import type { DefectId } from './settings';
 import type { Region } from './geometry';
+import type { BlobKind } from './detectors';
+import type { PreprocessingQuality } from './preprocessingQuality';
+import type { AgreementStatus, ReviewReason } from './review';
+import type { ThresholdConfig } from './thresholdConfig';
 
 export type Purpose = 'training' | 'analysis';
 export type LabelSource = 'manual' | 'ai' | 'corrected';
 export type GeomType = 'point' | 'line' | 'box' | 'mask';
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+export type UserRole = 'admin' | 'reviewer' | 'viewer';
 
 /** Records mirror docs/database_schema.md so the shape survives a move to a server DB. */
 
@@ -21,6 +26,9 @@ export interface PanelRecord {
   uploadedBy: string;
   reviewStatus: ReviewStatus;
   deletedAt: string | null;
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+  inspectionMode?: 'DECISION_SUPPORT' | 'SORTING_EXPORT';
 }
 
 export interface ImageRecord {
@@ -42,6 +50,20 @@ export interface ImageRecord {
   detectMessage: string;
   /** Robust-sigma score of the FPCB estimate. Below ~3 it is not trustworthy. */
   fpcbStrength: number;
+  /** Added in schema v3. Missing on legacy rows and treated as an uploaded real image. */
+  originalFilename?: string;
+  sourceType?: 'upload' | 'synthetic' | 'imported';
+  synthetic?: boolean;
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+  originalMapping?: { readonly panelId: number; readonly pattern: Pattern };
+  mappingHistory?: readonly {
+    readonly at: string;
+    readonly fromPanelId: number;
+    readonly fromPattern: Pattern;
+    readonly toPanelId: number;
+    readonly toPattern: Pattern;
+  }[];
 }
 
 export interface AnnotationRecord {
@@ -63,6 +85,8 @@ export interface AnnotationRecord {
   confidence: number;
   reviewStatus: ReviewStatus;
   createdAt: string;
+  /** Optional run-length encoded 512×512 segmentation mask for area-accurate manual correction. */
+  maskRle?: string;
 }
 
 export interface EmbeddingRecord {
@@ -79,10 +103,99 @@ export interface EmbeddingRecord {
   createdAt: string;
 }
 
+export interface EvidenceBase {
+  id: number;
+  schemaVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PreprocessingResultRecord extends EvidenceBase, PreprocessingQuality {
+  imageId: number;
+  thresholdVersion: string;
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+}
+
+export interface DetectionResultRecord extends EvidenceBase {
+  panelId: number;
+  imageId: number;
+  detectorId: string;
+  detectorName: string;
+  detectorVersion: string;
+  thresholdVersion: string;
+  sourcePattern: Pattern;
+  kind: BlobKind;
+  x: number;
+  y: number;
+  xRatio: number;
+  yRatio: number;
+  rRatio: number;
+  angleDeg: number;
+  region: Region;
+  bbox: readonly [number, number, number, number];
+  centroid: readonly [number, number];
+  maskAreaPx: number;
+  defectAreaRatio: number;
+  meanContrast: number;
+  peakContrast: number;
+  confidence: number;
+  ruleResult: DefectId;
+  similarityResult: DefectId | null;
+  finalSuggestedLabel: DefectId;
+  reviewStatus: ReviewStatus;
+  reviewReasons: ReviewReason[];
+  continuity?: number;
+  gapRatio?: number;
+  edgeContact?: boolean;
+  analysisScale?: 'normalized-component' | 'high-resolution-projection';
+}
+
+export interface PanelDecisionRecord extends EvidenceBase {
+  panelId: number;
+  thresholdVersion: string;
+  detectorVersion: string;
+  ruleResult: DefectId;
+  ruleConfidence: number;
+  knnResult: DefectId | null;
+  knnSimilarityScore: number | null;
+  agreementStatus: AgreementStatus;
+  finalSuggestedLabel: DefectId;
+  finalConfidence?: number;
+  reviewStatus: ReviewStatus;
+  reviewReasons: ReviewReason[];
+  processingMs: number;
+  sortingDisposition?: 'OK' | 'NG' | 'HOLD';
+  captureProfileVersion?: string;
+  goldenProfileVersion?: string;
+}
+
+export interface ThresholdConfigRecord extends EvidenceBase {
+  version: string;
+  active: boolean;
+  config: ThresholdConfig;
+}
+
+export interface ReviewRecord extends EvidenceBase {
+  panelId: number;
+  originalDecisionId: number | null;
+  reviewerFinalLabel: DefectId;
+  reviewer: string;
+  notes: string;
+  reviewDate: string;
+  status: Extract<ReviewStatus, 'approved' | 'rejected'>;
+  reviewReasons: ReviewReason[];
+}
+
 export type NewPanel = Omit<PanelRecord, 'id'>;
 export type NewImage = Omit<ImageRecord, 'id'>;
 export type NewAnnotation = Omit<AnnotationRecord, 'id'>;
 export type NewEmbedding = Omit<EmbeddingRecord, 'id'>;
+export type NewPreprocessingResult = Omit<PreprocessingResultRecord, 'id'>;
+export type NewDetectionResult = Omit<DetectionResultRecord, 'id'>;
+export type NewPanelDecision = Omit<PanelDecisionRecord, 'id'>;
+export type NewThresholdConfig = Omit<ThresholdConfigRecord, 'id'>;
+export type NewReview = Omit<ReviewRecord, 'id'>;
 
 /**
  * Storage seam.
@@ -109,6 +222,17 @@ export interface Repository {
   putEmbedding(embedding: NewEmbedding): Promise<number>;
   listEmbeddings(): Promise<EmbeddingRecord[]>;
   deleteEmbeddingsByPanel(panelId: number): Promise<void>;
+
+  putPreprocessingResult(result: NewPreprocessingResult): Promise<number>;
+  listPreprocessingResults(imageId?: number): Promise<PreprocessingResultRecord[]>;
+  replaceDetectionResults(panelId: number, results: NewDetectionResult[]): Promise<void>;
+  listDetectionResults(panelId?: number): Promise<DetectionResultRecord[]>;
+  putPanelDecision(decision: NewPanelDecision): Promise<number>;
+  listPanelDecisions(panelId?: number): Promise<PanelDecisionRecord[]>;
+  putThresholdConfig(config: NewThresholdConfig): Promise<number>;
+  listThresholdConfigs(): Promise<ThresholdConfigRecord[]>;
+  putReview(review: NewReview): Promise<number>;
+  listReviews(panelId?: number): Promise<ReviewRecord[]>;
 
   clear(): Promise<void>;
 }

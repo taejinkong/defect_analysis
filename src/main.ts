@@ -1,16 +1,16 @@
 import './styles.css';
 
 import type { Circle, Pattern, Rgba } from './core/types';
-import { PATTERNS } from './core/types';
+import { FRAME_CENTER, FRAME_RADIUS, PATTERNS } from './core/types';
 import { parseFilename } from './core/filename';
 import { detectActiveCircle } from './core/preprocess';
-import { normalizeFrame } from './core/normalize';
+import { normalizeFrame, normalizeLineFrame } from './core/normalize';
 import { formatClock, normalizeAngle } from './core/geometry';
 import { addBrightDot, addDarkDot, addLine, blankPanel, polarToSource, renderSyntheticPanel } from './core/synthetic';
 import { detectDefects, type ImageDetection } from './core/defects';
 import { judgePanel, type PanelVerdict } from './core/verdict';
 import { combinePanelFeature, fromBytes, toBytes, FEATURE_VERSION, PANEL_FEATURE_DIM } from './core/features';
-import { knnSearch, type SearchEntry } from './core/knn';
+import { knnSearch, type KnnOutcome, type SearchEntry } from './core/knn';
 import { fuseVerdict, type FusedVerdict } from './core/fusion';
 import {
   DEFECT,
@@ -20,11 +20,25 @@ import {
   type DefectId,
   type Settings,
 } from './core/settings';
-import type { AnnotationRecord, GeomType, ImageRecord, PanelRecord, Purpose, Repository } from './core/records';
+import type {
+  AnnotationRecord,
+  GeomType,
+  ImageRecord,
+  NewDetectionResult,
+  DetectionResultRecord,
+  PanelDecisionRecord,
+  PanelRecord,
+  PreprocessingResultRecord,
+  Purpose,
+  Repository,
+  ReviewRecord,
+  UserRole,
+} from './core/records';
 import { IndexedDbRepository } from './core/db';
 import {
   buildAnnotation,
   describeAnnotation,
+  encodeMaskRle,
   judgeFromLabels,
   manualDarkGrade,
   type ManualDarkGrade,
@@ -34,9 +48,22 @@ import { exportLabels, hasPixels, importLabels } from './core/transfer';
 import { fileToRgba, paintRgba, rgbaToBlob } from './browser/decode';
 import { drawDetections, drawFrameOverlay, drawSourceOverlay } from './browser/overlay';
 import { attachLabeling, drawAnnotations, drawPreview } from './browser/labeling';
-import { createSettingsPanel, loadSettings } from './browser/settingsPanel';
+import { createSettingsPanel, loadThresholdConfig } from './browser/settingsPanel';
+import { createInspectionProfilePanel, loadInspectionProfile } from './browser/inspectionProfilePanel';
 import { renderDashboard } from './browser/dashboardView';
 import type { DashboardPanel, DashboardPoint } from './core/dashboard';
+import { thresholdConfigToSettings } from './core/thresholdConfig';
+import {
+  evaluatePreprocessingQuality,
+  type PreprocessingQuality,
+} from './core/preprocessingQuality';
+import { DETECTOR_VERSION } from './core/detectors';
+import { REVIEW_REASON_NAME } from './core/review';
+import {
+  profileReadyForAutomaticNoDisplay,
+  profileWarnings,
+  type InspectionProfile,
+} from './core/inspectionProfile';
 
 // ---------------------------------------------------------------- state
 
@@ -44,6 +71,10 @@ let repo: Repository;
 let panels: PanelRecord[] = [];
 let images: ImageRecord[] = [];
 let annotations: AnnotationRecord[] = [];
+let preprocessingResults: PreprocessingResultRecord[] = [];
+let panelDecisions: PanelDecisionRecord[] = [];
+let detectionResults: DetectionResultRecord[] = [];
+let reviews: ReviewRecord[] = [];
 
 /** Decoded pixels, keyed by image id. Blobs are decoded once and kept. */
 const pixels = new Map<number, Rgba>();
@@ -51,10 +82,14 @@ const pixels = new Map<number, Rgba>();
 interface PanelAnalysis {
   readonly rule: PanelVerdict;
   readonly fused: FusedVerdict;
+  readonly images: ImageDetection[];
+  readonly qualityByImage: ReadonlyMap<number, PreprocessingQuality>;
 }
 const verdicts = new Map<number, PanelAnalysis>();
 
-let settings: Settings = loadSettings();
+const initialThresholdConfig = loadThresholdConfig();
+let inspectionProfile: InspectionProfile = loadInspectionProfile();
+let settings: Settings = thresholdConfigToSettings(initialThresholdConfig);
 let verdictsStale = false;
 let lastRunNote = '';
 let selected: ImageRecord | null = null;
@@ -75,6 +110,8 @@ const summaryEl = $('summary');
 const detailEl = $('detail');
 const srcCanvas = $<HTMLCanvasElement>('src-canvas');
 const frameCanvas = $<HTMLCanvasElement>('frame-canvas');
+const darkResidualCanvas = $<HTMLCanvasElement>('dark-residual-canvas');
+const brightResidualCanvas = $<HTMLCanvasElement>('bright-residual-canvas');
 const rotationInput = $<HTMLInputElement>('rotation');
 const rotationValue = $('rotation-value');
 const manualBox = $('manual-circle');
@@ -88,6 +125,13 @@ const defectSelect = $<HTMLSelectElement>('label-defect');
 const toolSelect = $<HTMLSelectElement>('label-tool');
 const labelList = $('label-list');
 const settingsMount = $('settings-mount');
+const roleSelect = $<HTMLSelectElement>('user-role');
+const mapPattern = $<HTMLSelectElement>('map-pattern');
+const mapPanel = $<HTMLSelectElement>('map-panel');
+
+let currentRole = (localStorage.getItem('defect-analysis.role') as UserRole | null) ?? 'admin';
+if (!['admin', 'reviewer', 'viewer'].includes(currentRole)) currentRole = 'admin';
+roleSelect.value = currentRole;
 
 // ---------------------------------------------------------------- routing
 
@@ -97,7 +141,7 @@ const settingsMount = $('settings-mount');
  * Each functional area is its own full screen instead of a section on one long
  * scrolling page, and the URL (#/panels …) survives reload and back/forward.
  */
-const VIEWS = ['intake', 'status', 'panels', 'dashboard', 'settings'] as const;
+const VIEWS = ['intake', 'status', 'panels', 'review', 'dashboard', 'settings'] as const;
 type View = (typeof VIEWS)[number];
 
 function parseRoute(): View {
@@ -113,6 +157,7 @@ function showView(view: View): void {
   // The dashboard aggregates whatever verdicts exist right now, so rebuild it
   // on every entry rather than caching a stale render.
   if (view === 'dashboard') refreshDashboard();
+  if (view === 'review') renderReviewQueue();
   if (view === 'settings') {
     const details = settingsMount.querySelector('details');
     if (details) details.open = true;
@@ -147,9 +192,44 @@ const settingsPanel = createSettingsPanel(settings, {
   onCommit: () => {
     renderAnalyzeNote();
     if (repo) void syncAllManualDarkGrades();
+    if (repo) void persistActiveThresholdConfig();
   },
+}, initialThresholdConfig);
+const inspectionProfilePanel = createInspectionProfilePanel(inspectionProfile, (next) => {
+  inspectionProfile = next;
+  if (verdicts.size > 0) verdictsStale = true;
+  renderAnalyzeNote();
 });
-settingsMount.append(settingsPanel.element);
+settingsMount.append(inspectionProfilePanel.element, settingsPanel.element);
+
+roleSelect.addEventListener('change', () => {
+  currentRole = roleSelect.value as UserRole;
+  localStorage.setItem('defect-analysis.role', currentRole);
+  applyRolePermissions();
+  render();
+  if (parseRoute() === 'review') renderReviewQueue();
+});
+
+function applyRolePermissions(): void {
+  const viewer = currentRole === 'viewer';
+  const admin = currentRole === 'admin';
+  for (const id of ['pick', 'sample', 'analyze', 'approve-all', 'wipe', 'import']) {
+    $<HTMLButtonElement>(id).disabled = viewer || (id === 'wipe' && !admin);
+  }
+  defectSelect.disabled = viewer;
+  toolSelect.disabled = viewer;
+  mapPattern.disabled = viewer;
+  mapPanel.disabled = viewer;
+  $<HTMLButtonElement>('apply-mapping').disabled = viewer;
+  $<HTMLButtonElement>('undo-mapping').disabled = viewer;
+  const settingsNav = document.querySelector<HTMLButtonElement>('.app-nav-item[data-view="settings"]');
+  if (settingsNav) settingsNav.hidden = !admin;
+  settingsPanel.element.toggleAttribute('hidden', !admin);
+  inspectionProfilePanel.element.toggleAttribute('hidden', !admin);
+  if (!admin && parseRoute() === 'settings') navigate('panels');
+}
+
+applyRolePermissions();
 
 // Initial route, after the settings panel exists so a #/settings deep link
 // lands with the panel expanded.
@@ -179,14 +259,22 @@ function scheduleLivePreview(): void {
 // ---------------------------------------------------------------- boot
 
 async function reload(): Promise<void> {
-  const [allPanels, allImages, allAnnotations] = await Promise.all([
+  const [allPanels, allImages, allAnnotations, allPreprocessing, allDetections, allDecisions, allReviews] = await Promise.all([
     repo.listPanels(),
     repo.listImages(),
     repo.listAnnotations(),
+    repo.listPreprocessingResults(),
+    repo.listDetectionResults(),
+    repo.listPanelDecisions(),
+    repo.listReviews(),
   ]);
   panels = allPanels.filter((p) => p.deletedAt === null);
   images = allImages;
   annotations = allAnnotations;
+  preprocessingResults = allPreprocessing;
+  detectionResults = allDetections;
+  panelDecisions = allDecisions;
+  reviews = allReviews;
 
   for (const image of images) {
     if (pixels.has(image.id) || !hasPixels(image)) continue;
@@ -200,9 +288,14 @@ void (async () => {
     repo = await IndexedDbRepository.open();
     await IndexedDbRepository.requestPersistence();
     await reload();
+    await persistActiveThresholdConfig();
     // Migrate box labels made by older builds, where the operator manually
     // selected 小/中/大, to the grade derived from their combined selected area.
     await syncAllManualDarkGrades();
+    // Feature v2 uses the new physical Black/White signals. Rebuild approved
+    // training embeddings from the locally stored pixels so existing learning
+    // data keeps working without asking the operator to approve it again.
+    await rebuildStaleEmbeddings();
   } catch (err) {
     console.error(err);
     alert(`저장소를 열 수 없습니다: ${String(err)}`);
@@ -244,6 +337,8 @@ interface Metadata {
   processName: string;
   equipmentId: string;
   user: string;
+  captureProfileVersion: string;
+  goldenProfileVersion: string;
 }
 
 function metadata(): Metadata {
@@ -253,6 +348,8 @@ function metadata(): Metadata {
     processName: $<HTMLInputElement>('meta-process').value.trim(),
     equipmentId: $<HTMLInputElement>('meta-equipment').value.trim(),
     user: $<HTMLInputElement>('meta-user').value.trim(),
+    captureProfileVersion: inspectionProfile.capture.version,
+    goldenProfileVersion: inspectionProfile.golden.version,
   };
 }
 
@@ -331,6 +428,9 @@ async function addImage(name: string, rgba: Rgba, source?: Blob): Promise<void> 
       uploadedBy: meta.user,
       reviewStatus: 'pending',
       deletedAt: null,
+      captureProfileVersion: meta.captureProfileVersion,
+      goldenProfileVersion: meta.goldenProfileVersion,
+      inspectionMode: inspectionProfile.mode,
     };
     panelId = await repo.addPanel(record);
     // Keep the local list current so the next file in this batch finds the panel
@@ -359,6 +459,11 @@ async function addImage(name: string, rgba: Rgba, source?: Blob): Promise<void> 
     detectOk: detect.ok,
     detectMessage: detect.ok ? '' : detect.message,
     fpcbStrength: detect.ok ? detect.fpcb.strength : 0,
+    originalFilename: name,
+    sourceType: source ? 'upload' : 'synthetic',
+    synthetic: !source,
+    captureProfileVersion: meta.captureProfileVersion,
+    goldenProfileVersion: meta.goldenProfileVersion,
   });
   pixels.set(imageId, rgba);
   images.push({
@@ -377,6 +482,11 @@ async function addImage(name: string, rgba: Rgba, source?: Blob): Promise<void> 
     detectOk: detect.ok,
     detectMessage: detect.ok ? '' : detect.message,
     fpcbStrength: detect.ok ? detect.fpcb.strength : 0,
+    originalFilename: name,
+    sourceType: source ? 'upload' : 'synthetic',
+    synthetic: !source,
+    captureProfileVersion: meta.captureProfileVersion,
+    goldenProfileVersion: meta.goldenProfileVersion,
   });
 }
 
@@ -492,13 +602,64 @@ function analyzeImage(
   circle: Circle,
   rotationDeg: number,
   withFeature: boolean,
-): ImageDetection | null {
+  patternCompleteness: number,
+  usedReferenceGeometry: boolean,
+): AnalyzedImage | null {
   const rgba = pixels.get(image.id);
   if (!rgba) return null;
   const frame = normalizeFrame(rgba, circle, rotationDeg);
-  return detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings, {
+  const panel = panelOf(image);
+  const synthetic = image.synthetic === true;
+  const recordedProfileMatches =
+    image.captureProfileVersion === inspectionProfile.capture.version &&
+    image.goldenProfileVersion === inspectionProfile.golden.version;
+  const profileReady = synthetic || (
+    recordedProfileMatches && profileReadyForAutomaticNoDisplay(inspectionProfile, panel?.model ?? '')
+  );
+  const goldenRange = inspectionProfile.golden.ranges[image.pattern];
+  const useHighResolutionLine = circle.r * 2 >= settings['line.native_min_diameter_px'];
+  const lineFrame = useHighResolutionLine ? normalizeLineFrame(rgba, circle, rotationDeg) : undefined;
+  const rawDetection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings, {
     withFeature,
+    ...(lineFrame ? { highResolutionLineFrame: lineFrame } : {}),
+    inspection: {
+      validatedCaptureAndGolden: profileReady,
+      expectedMinMean: goldenRange.minMean,
+      expectedMaxMean: goldenRange.maxMean,
+      maxBackgroundSaturationRatio: goldenRange.maxBackgroundSaturationRatio,
+    },
   });
+  const setupWarnings = synthetic
+    ? []
+    : [
+      ...profileWarnings(inspectionProfile, panel?.model ?? ''),
+      ...(recordedProfileMatches ? [] : ['업로드 당시 검사 프로파일과 현재 활성 버전이 다릅니다.']),
+    ];
+  const detection: ImageDetection = setupWarnings.length === 0
+    ? rawDetection
+    : { ...rawDetection, qualityWarnings: [...new Set([...rawDetection.qualityWarnings, ...setupWarnings])] };
+  const detect = detectActiveCircle(rgba);
+  const quality = evaluatePreprocessingQuality({
+    source: rgba,
+    frame,
+    detect,
+    circle,
+    rotationDeg,
+    patternCompleteness,
+    usedReferenceGeometry,
+    backgroundSaturationRatio: detection.backgroundSaturationPct / 100,
+    localDefectSaturationRatio: detection.localDefectSaturationPct / 100,
+    captureProfileValidated: synthetic || inspectionProfile.capture.validated,
+    goldenReferenceValidated: synthetic || profileReady,
+    expectedMeanRange: [goldenRange.minMean, goldenRange.maxMean],
+  }, settings);
+  return { image, detection, quality };
+}
+
+interface AnalyzedImage {
+  readonly image: ImageRecord;
+  readonly detection: ImageDetection;
+  readonly quality: PreprocessingQuality;
 }
 
 /**
@@ -506,28 +667,61 @@ function analyzeImage(
  * (for the Rule verdict) and the combined feature vector (for kNN). One pass, so
  * the expensive background fit is not repeated.
  */
-function analyzePanel(panelId: number): { detections: ImageDetection[]; feature: Float32Array | null; skipped: number } {
+function analyzePanel(panelId: number): {
+  detections: ImageDetection[];
+  analyzedImages: AnalyzedImage[];
+  feature: Float32Array | null;
+  skipped: number;
+} {
   const panelImages = imagesOf(panelId);
+  const patternCompleteness = new Set(panelImages.map((image) => image.pattern)).size / PATTERNS.length;
   // An unlit image has no circle of its own, which is exactly the image where
   // 미점등 must be found. Borrow geometry from a sibling of the same capture.
   const reference = panelImages.find((i) => i.detectOk && pixels.has(i.id));
-  if (!reference) return { detections: [], feature: null, skipped: panelImages.length };
+  if (!reference) {
+    const failed = panelImages.flatMap((image) => {
+      const analyzed = analyzeImage(
+        image,
+        circleOf(image),
+        image.rotationDeg,
+        false,
+        patternCompleteness,
+        false,
+      );
+      return analyzed ? [analyzed] : [];
+    });
+    return {
+      detections: [],
+      analyzedImages: failed,
+      feature: null,
+      skipped: panelImages.length,
+    };
+  }
 
   const detections: ImageDetection[] = [];
+  const analyzedImages: AnalyzedImage[] = [];
   const byPattern: Partial<Record<Pattern, Float32Array>> = {};
   let skipped = 0;
   for (const image of panelImages) {
     const source = image.detectOk ? image : reference;
-    const detection = analyzeImage(image, circleOf(source), source.rotationDeg, true);
-    if (detection) {
-      detections.push(detection);
-      if (detection.feature) byPattern[image.pattern] = detection.feature;
+    const analyzed = analyzeImage(
+      image,
+      circleOf(source),
+      source.rotationDeg,
+      true,
+      patternCompleteness,
+      source.id !== image.id,
+    );
+    if (analyzed) {
+      analyzedImages.push(analyzed);
+      detections.push(analyzed.detection);
+      if (analyzed.detection.feature) byPattern[image.pattern] = analyzed.detection.feature;
     } else {
       skipped++;
     }
   }
   const feature = detections.length > 0 ? combinePanelFeature(byPattern) : null;
-  return { detections, feature, skipped };
+  return { detections, analyzedImages, feature, skipped };
 }
 
 /** Approved training panels, loaded as kNN search candidates. */
@@ -535,7 +729,15 @@ async function loadSearchCandidates(): Promise<SearchEntry[]> {
   const embeddings = await repo.listEmbeddings();
   return embeddings
     .filter((e) => e.isSearchable && e.featureVersion === FEATURE_VERSION && e.dim === PANEL_FEATURE_DIM)
-    .map((e) => ({ panelId: e.panelId, labelDefectId: e.labelDefectId, vector: fromBytes(e.vector) }));
+    .map((e) => {
+      const panel = panels.find((candidate) => candidate.id === e.panelId);
+      return {
+        panelId: e.panelId,
+        labelDefectId: e.labelDefectId,
+        vector: fromBytes(e.vector),
+        ...(panel ? { lotId: panel.lotId, panelCode: panel.panelCode, equipmentId: panel.equipmentId } : {}),
+      };
+    });
 }
 
 $('analyze').addEventListener('click', () => {
@@ -546,17 +748,41 @@ $('analyze').addEventListener('click', () => {
     let skipped = 0;
 
     for (const panel of panels) {
-      const { detections, feature, skipped: panelSkipped } = analyzePanel(panel.id);
+      const panelStarted = performance.now();
+      const { detections, analyzedImages, feature, skipped: panelSkipped } = analyzePanel(panel.id);
       skipped += panelSkipped;
-      if (detections.length === 0) continue;
+      if (detections.length === 0 || analyzedImages.some((analyzed) => analyzed.quality.status === 'FAIL')) {
+        await persistPreprocessingEvidence(analyzedImages);
+        continue;
+      }
 
       const rule = judgePanel(detections, settings);
       // A panel cannot match itself: exclude its own training embedding from the
       // candidate set, or an already-approved panel would trivially vote for its
       // own label at similarity 1.
-      const others = candidates.filter((c) => c.panelId !== panel.id);
+      const others = candidates.filter((c) =>
+        c.panelId !== panel.id &&
+        !(c.lotId === panel.lotId && c.panelCode === panel.panelCode),
+      );
       const knn = feature ? knnSearch(feature, others, settings) : { status: 'insufficient-data' as const, candidateCount: others.length };
-      verdicts.set(panel.id, { rule, fused: fuseVerdict(rule, knn) });
+      const preprocessingReasons = [
+        ...new Set(analyzedImages.flatMap((analyzed) => analyzed.quality.reviewReasons)),
+      ];
+      const fused = fuseVerdict(rule, knn, preprocessingReasons);
+      verdicts.set(panel.id, {
+        rule,
+        fused,
+        images: detections,
+        qualityByImage: new Map(analyzedImages.map((analyzed) => [analyzed.image.id, analyzed.quality])),
+      });
+      await persistAnalysisEvidence(
+        panel,
+        analyzedImages,
+        rule,
+        fused,
+        knn,
+        performance.now() - panelStarted,
+      );
     }
 
     verdictsStale = false;
@@ -565,13 +791,266 @@ $('analyze').addEventListener('click', () => {
     if (analyzedTraining > 0) lastRunNote += ` (학습용 ${analyzedTraining}개는 집계 제외)`;
     lastRunNote += ` · ${(performance.now() - started).toFixed(0)}ms · 학습 ${candidates.length}개`;
     if (skipped > 0) lastRunNote += ` · ${skipped}장 제외 (원 검출 실패 또는 이미지 없음)`;
+    [preprocessingResults, panelDecisions] = await Promise.all([
+      repo.listPreprocessingResults(),
+      repo.listPanelDecisions(),
+    ]);
     render();
+    if (parseRoute() === 'review') renderReviewQueue();
   })();
 });
+
+async function persistActiveThresholdConfig(): Promise<void> {
+  const config = settingsPanel.getConfig();
+  await repo.putThresholdConfig({
+    schemaVersion: 3,
+    version: config.version,
+    active: true,
+    config,
+    createdAt: config.updatedAt,
+    updatedAt: config.updatedAt,
+  });
+}
+
+async function persistAnalysisEvidence(
+  panel: PanelRecord,
+  analyzedImages: readonly AnalyzedImage[],
+  rule: PanelVerdict,
+  fused: FusedVerdict,
+  knn: KnnOutcome,
+  processingMs: number,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const thresholdVersion = settingsPanel.getConfig().version;
+  await persistPreprocessingEvidence(analyzedImages, now);
+
+  const similarityResult = knn.status === 'ok' ? knn.result.verdictId : null;
+  const evidence: NewDetectionResult[] = [];
+  for (const analyzed of analyzedImages) {
+    for (const detection of analyzed.detection.detections) {
+      const labeled = rule.labeled.find(
+        (item) =>
+          item.pattern === analyzed.image.pattern &&
+          item.kind === detection.kind &&
+          Math.hypot(item.x - detection.x, item.y - detection.y) < 1,
+      );
+      const threshold = detection.kind.startsWith('dark')
+        ? analyzed.detection.darkThreshold
+        : analyzed.detection.brightThreshold;
+      evidence.push({
+        panelId: panel.id,
+        imageId: analyzed.image.id,
+        detectorId: detection.detectorId,
+        detectorName: detection.detectorName,
+        detectorVersion: detection.detectorVersion,
+        thresholdVersion,
+        sourcePattern: analyzed.image.pattern,
+        kind: detection.kind,
+        x: detection.x,
+        y: detection.y,
+        xRatio: (detection.x - FRAME_CENTER) / FRAME_RADIUS,
+        yRatio: (detection.y - FRAME_CENTER) / FRAME_RADIUS,
+        rRatio: detection.rRatio,
+        angleDeg: detection.angleDeg,
+        region: detection.region,
+        bbox: detection.bbox,
+        centroid: [detection.x, detection.y],
+        maskAreaPx: detection.areaPx,
+        defectAreaRatio: analyzed.detection.activeAreaPx > 0
+          ? detection.areaPx / analyzed.detection.activeAreaPx
+          : 0,
+        meanContrast: detection.meanContrast,
+        peakContrast: detection.peakContrast,
+        confidence: Math.max(0, Math.min(1, detection.meanContrast / Math.max(1, threshold))),
+        ruleResult: labeled?.defectId ?? DEFECT.GOOD,
+        similarityResult,
+        finalSuggestedLabel: labeled?.counted ? labeled.defectId : DEFECT.GOOD,
+        reviewStatus: panel.reviewStatus,
+        reviewReasons: fused.reviewReasons,
+        ...(detection.continuity === undefined ? {} : { continuity: detection.continuity }),
+        ...(detection.gapRatio === undefined ? {} : { gapRatio: detection.gapRatio }),
+        ...(detection.edgeContact === undefined ? {} : { edgeContact: detection.edgeContact }),
+        ...(detection.analysisScale === undefined ? {} : { analysisScale: detection.analysisScale }),
+        schemaVersion: 3,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  }
+  await repo.replaceDetectionResults(panel.id, evidence);
+
+  const neighbors = knn.status === 'ok' ? knn.result.neighbors : knn.status === 'no-match' ? knn.neighbors : [];
+  const knnSimilarityScore = neighbors.length > 0 ? Math.max(...neighbors.map((neighbor) => neighbor.similarity)) : null;
+  await repo.putPanelDecision({
+    panelId: panel.id,
+    thresholdVersion,
+    detectorVersion: DETECTOR_VERSION,
+    ruleResult: rule.finalJudgementId,
+    ruleConfidence: rule.confidence,
+    knnResult: similarityResult,
+    knnSimilarityScore,
+    agreementStatus: fused.agreementStatus,
+    finalSuggestedLabel: fused.finalJudgementId,
+    finalConfidence: fused.confidence,
+    reviewStatus: fused.needsReview ? 'pending' : panel.reviewStatus,
+    reviewReasons: fused.reviewReasons,
+    processingMs,
+    sortingDisposition: fused.sortingDisposition,
+    captureProfileVersion: inspectionProfile.capture.version,
+    goldenProfileVersion: inspectionProfile.golden.version,
+    schemaVersion: 3,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function persistPreprocessingEvidence(
+  analyzedImages: readonly AnalyzedImage[],
+  timestamp = new Date().toISOString(),
+): Promise<void> {
+  const thresholdVersion = settingsPanel.getConfig().version;
+  await Promise.all(
+    analyzedImages.map((analyzed) =>
+      repo.putPreprocessingResult({
+        ...analyzed.quality,
+        imageId: analyzed.image.id,
+        thresholdVersion,
+        captureProfileVersion: analyzed.image.captureProfileVersion ?? inspectionProfile.capture.version,
+        goldenProfileVersion: analyzed.image.goldenProfileVersion ?? inspectionProfile.golden.version,
+        schemaVersion: 3,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    ),
+  );
+}
 
 // ---------------------------------------------------------------- transfer
 
 // ---------------------------------------------------------------- dashboard
+
+function renderReviewQueue(): void {
+  const root = $('review-list');
+  root.replaceChildren();
+  const items = panels.flatMap((panel) => {
+    const analysis = verdicts.get(panel.id);
+    const decision = panelDecisions.find((item) => item.panelId === panel.id);
+    const reviewed = reviews.find((item) => item.panelId === panel.id);
+    const reasons = analysis?.fused.reviewReasons ?? decision?.reviewReasons ?? [];
+    if (reviewed || reasons.length === 0) return [];
+    return [{ panel, analysis, decision, reasons }];
+  });
+  $('review-count').textContent = `${items.length}건`;
+
+  if (items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'view-empty';
+    empty.textContent = panelDecisions.length === 0
+      ? '저장된 분석 결과가 없습니다. 먼저 불량 분석을 실행하세요.'
+      : '현재 미검수 항목이 없습니다.';
+    root.append(empty);
+    return;
+  }
+
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = 'review-item';
+    const head = document.createElement('div');
+    head.className = 'review-item-head';
+    const title = document.createElement('strong');
+    title.textContent = `${item.panel.lotId} / ${item.panel.panelCode}`;
+    const suggested = item.analysis?.fused.finalJudgementId ?? item.decision?.finalSuggestedLabel ?? DEFECT.GOOD;
+    head.append(title, badge(`자동 제안: ${DEFECT_NAME[suggested]}`, 'warn'));
+    card.append(head);
+
+    const reason = document.createElement('p');
+    reason.textContent = item.reasons.map((value) => REVIEW_REASON_NAME[value]).join(' · ');
+    card.append(reason);
+
+    const patterns = document.createElement('div');
+    patterns.className = 'review-patterns';
+    for (const image of imagesOf(item.panel.id)) {
+      const quality = item.analysis?.qualityByImage.get(image.id)
+        ?? preprocessingResults.find((result) => result.imageId === image.id);
+      const detection = item.analysis?.images.find((result) => result.pattern === image.pattern);
+      const storedCount = detectionResults.filter((result) => result.imageId === image.id).length;
+      patterns.append(badge(
+        `${image.pattern}: ${quality?.status ?? '미분석'} · ${detection?.detections.length ?? storedCount}개`,
+        quality?.status === 'FAIL' ? 'danger' : quality?.status === 'REVIEW' ? 'warn' : 'info',
+      ));
+    }
+    card.append(patterns);
+
+    const actions = document.createElement('div');
+    actions.className = 'review-item-actions';
+    const label = document.createElement('select');
+    for (const defectId of Object.keys(DEFECT_NAME) as DefectId[]) {
+      label.append(new Option(DEFECT_NAME[defectId], defectId));
+    }
+    label.value = suggested;
+    label.disabled = currentRole === 'viewer';
+    const notes = document.createElement('input');
+    notes.type = 'text';
+    notes.placeholder = '검수 메모 (선택)';
+    notes.disabled = currentRole === 'viewer';
+    const detail = document.createElement('button');
+    detail.type = 'button';
+    detail.className = 'ghost small';
+    detail.textContent = '상세 검수';
+    detail.addEventListener('click', () => {
+      const first = imagesOf(item.panel.id)[0];
+      if (first) openDetail(first);
+    });
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'small';
+    approve.textContent = '판정 승인';
+    approve.disabled = currentRole === 'viewer';
+    approve.addEventListener('click', () => {
+      void saveEngineerReview(item.panel, item.decision, label.value as DefectId, notes.value, 'approved');
+    });
+    const reject = document.createElement('button');
+    reject.type = 'button';
+    reject.className = 'ghost small';
+    reject.textContent = '반려';
+    reject.disabled = currentRole === 'viewer';
+    reject.addEventListener('click', () => {
+      void saveEngineerReview(item.panel, item.decision, label.value as DefectId, notes.value, 'rejected');
+    });
+    actions.append(label, notes, detail, reject, approve);
+    card.append(actions);
+    root.append(card);
+  }
+}
+
+async function saveEngineerReview(
+  panel: PanelRecord,
+  decision: PanelDecisionRecord | undefined,
+  finalLabel: DefectId,
+  notes: string,
+  status: 'approved' | 'rejected',
+): Promise<void> {
+  if (currentRole === 'viewer') return;
+  const now = new Date().toISOString();
+  const reasons = verdicts.get(panel.id)?.fused.reviewReasons ?? decision?.reviewReasons ?? [];
+  await repo.putReview({
+    panelId: panel.id,
+    originalDecisionId: decision?.id ?? null,
+    reviewerFinalLabel: finalLabel,
+    reviewer: $<HTMLInputElement>('meta-user').value.trim() || currentRole,
+    notes: notes.trim(),
+    reviewDate: now,
+    status,
+    reviewReasons: reasons,
+    schemaVersion: 4,
+    createdAt: now,
+    updatedAt: now,
+  });
+  if (status === 'approved') await setPanelApproval(panel, true);
+  else await repo.updatePanel(panel.id, { reviewStatus: 'rejected' });
+  await reload();
+  renderReviewQueue();
+}
 
 /**
  * Turn analyzed panels into the dashboard's input.
@@ -588,18 +1067,38 @@ function buildDashboardPanels(): DashboardPanel[] {
     // analysis only, so they are excluded even when they carry a verdict.
     if (panel.purpose === 'training') continue;
     const analysis = verdicts.get(panel.id);
-    if (!analysis) continue;
-    const points: DashboardPoint[] = analysis.rule.labeled
-      .filter((l) => l.counted)
-      .map((l) => ({
-        panelId: panel.id,
-        defectId: l.defectId,
-        pattern: l.pattern,
-        rRatio: l.rRatio,
-        angleDeg: l.angleDeg,
-        region: l.region,
-        areaPx: l.areaPx,
-      }));
+    const decision = panelDecisions.find((item) => item.panelId === panel.id);
+    if (!analysis && !decision) continue;
+    const persistedDetections = detectionResults.filter(
+      (item) => item.panelId === panel.id && item.finalSuggestedLabel !== DEFECT.GOOD,
+    );
+    const points: DashboardPoint[] = analysis
+      ? analysis.rule.labeled
+          .filter((item) => item.counted)
+          .map((item) => ({
+            panelId: panel.id,
+            defectId: item.defectId,
+            pattern: item.pattern,
+            rRatio: item.rRatio,
+            angleDeg: item.angleDeg,
+            region: item.region,
+            areaPx: item.areaPx,
+          }))
+      : persistedDetections.map((item) => ({
+          panelId: panel.id,
+          defectId: item.finalSuggestedLabel,
+          pattern: item.sourcePattern,
+          rRatio: item.rRatio,
+          angleDeg: item.angleDeg,
+          region: item.region,
+          areaPx: item.maskAreaPx,
+        }));
+    const panelImages = imagesOf(panel.id);
+    const reviewed = reviews.find((item) => item.panelId === panel.id && item.status === 'approved');
+    const automaticJudgement = analysis?.fused.finalJudgementId ?? decision!.finalSuggestedLabel;
+    const detectedDefectIds = analysis?.rule.detectedDefectIds
+      ?? [...new Set(persistedDetections.map((item) => item.finalSuggestedLabel))];
+    const imageIds = new Set(panelImages.map((image) => image.id));
     out.push({
       panelId: panel.id,
       lotId: panel.lotId,
@@ -607,11 +1106,20 @@ function buildDashboardPanels(): DashboardPanel[] {
       processName: panel.processName,
       equipmentId: panel.equipmentId,
       reviewStatus: panel.reviewStatus,
-      finalJudgementId: analysis.fused.finalJudgementId,
-      detectedDefectIds: analysis.rule.detectedDefectIds,
-      confidence: analysis.fused.confidence,
-      needsReview: analysis.fused.needsReview,
+      finalJudgementId: reviewed?.reviewerFinalLabel ?? automaticJudgement,
+      detectedDefectIds,
+      confidence: analysis?.fused.confidence ?? decision!.finalConfidence ?? decision!.ruleConfidence,
+      needsReview: !reviewed && (analysis?.fused.needsReview ?? decision!.reviewReasons.length > 0),
       points,
+      imageCount: panelImages.length,
+      preprocessingFailed: analysis
+        ? [...analysis.qualityByImage.values()].some((quality) => quality.status === 'FAIL')
+        : preprocessingResults.some((quality) => imageIds.has(quality.imageId) && quality.status === 'FAIL'),
+      synthetic: panelImages.length > 0 && panelImages.every((image) => image.synthetic === true),
+      reviewerAgreement: reviewed ? reviewed.reviewerFinalLabel === automaticJudgement : null,
+      automaticJudgementId: automaticJudgement,
+      reviewerJudgementId: reviewed?.reviewerFinalLabel ?? null,
+      capturedAt: panel.uploadedAt,
     });
   }
   return out;
@@ -714,6 +1222,71 @@ $('export').addEventListener('click', () => {
   })();
 });
 
+$('export-diagnostics').addEventListener('click', () => {
+  if (verdicts.size === 0 || verdictsStale) {
+    alert(verdictsStale ? '임계값 변경 후 불량 분석을 다시 실행하세요.' : '먼저 불량 분석을 실행하세요.');
+    return;
+  }
+
+  const diagnostic = {
+    format: 'watch-defect-diagnostics-v1',
+    exportedAt: new Date().toISOString(),
+    featureVersion: FEATURE_VERSION,
+    settings,
+    // Deliberately excludes originalBlob, RGBA pixels and thumbnails. This file
+    // is safe to share for threshold tuning without exposing company images.
+    panels: panels.flatMap((panel, panelIndex) => {
+      const analysis = verdicts.get(panel.id);
+      if (!analysis) return [];
+      return [{
+        panel: {
+          index: panelIndex + 1,
+          purpose: panel.purpose,
+          reviewStatus: panel.reviewStatus,
+        },
+        verdict: {
+          finalJudgementId: analysis.fused.finalJudgementId,
+          ruleJudgementId: analysis.rule.finalJudgementId,
+          knnJudgementId: analysis.fused.knnVerdictId,
+          confidence: analysis.fused.confidence,
+          needsReview: analysis.fused.needsReview,
+          detectedDefectIds: analysis.rule.detectedDefectIds,
+          suppressed: analysis.rule.suppressed,
+          darkAreaPct: analysis.rule.darkAreaPct,
+          decisionReason: analysis.fused.decisionReason,
+          qualityWarnings: analysis.rule.qualityWarnings,
+        },
+        images: analysis.images.map((image) => ({
+          pattern: image.pattern,
+          activeAreaPx: image.activeAreaPx,
+          meanLuma: image.meanLuma,
+          blackBackgroundMean: image.blackBackgroundMean,
+          whiteBackgroundMean: image.whiteBackgroundMean,
+          darkThreshold: image.darkThreshold,
+          brightThreshold: image.brightThreshold,
+          whiteSaturationPct: image.whiteSaturationPct,
+          qualityWarnings: image.qualityWarnings,
+          darkAreaPct: image.darkAreaPct,
+          noDisplay: image.noDisplay,
+          drivingFlag: image.drivingFlag,
+          detections: image.detections,
+        })),
+      }];
+    }),
+  };
+  downloadJson(diagnostic, `defect-diagnostics-${new Date().toISOString().slice(0, 10)}.json`);
+});
+
+function downloadJson(value: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 $('import').addEventListener('click', () => importInput.click());
 importInput.addEventListener('change', () => {
   const file = importInput.files?.[0];
@@ -780,6 +1353,7 @@ $('wipe').addEventListener('click', () => {
   if (!confirm('저장된 패널, 이미지, 라벨을 모두 삭제합니다. 되돌릴 수 없습니다. 계속할까요?')) return;
   void (async () => {
     await repo.clear();
+    await persistActiveThresholdConfig();
     pixels.clear();
     invalidateVerdicts();
     await reload();
@@ -935,8 +1509,34 @@ function renderPanel(panel: PanelRecord): HTMLElement {
   if (labels.length > 0) el.append(renderLabelSummary(labels));
 
   const analysis = verdicts.get(panel.id);
-  if (analysis) el.append(renderVerdict(analysis));
+  if (analysis) el.append(renderVerdict(analysis), renderPatternCorrelation(analysis));
   return el;
+}
+
+function renderPatternCorrelation(analysis: PanelAnalysis): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'verdict';
+  const line = document.createElement('div');
+  line.className = 'verdict-line';
+  const caption = document.createElement('span');
+  caption.className = 'label-caption';
+  caption.textContent = 'R/G/B/W 상관';
+  line.append(caption);
+  for (const pattern of PATTERNS) {
+    const image = analysis.images.find((item) => item.pattern === pattern);
+    if (!image) {
+      line.append(badge(`${pattern}: 결손`, 'danger'));
+      continue;
+    }
+    const counted = analysis.rule.labeled.filter((item) => item.pattern === pattern && item.counted).length;
+    const pending = image.detections.length - counted;
+    line.append(badge(
+      `${pattern}: 확인 ${counted} / 후보 ${image.detections.length}`,
+      pending > 0 ? 'warn' : 'info',
+    ));
+  }
+  box.append(line);
+  return box;
 }
 
 function spacer(): HTMLElement {
@@ -973,6 +1573,7 @@ function approveButton(panel: PanelRecord): HTMLElement {
   btn.type = 'button';
   btn.className = 'ghost small';
   btn.textContent = panel.reviewStatus === 'approved' ? '승인 취소' : '승인';
+  btn.disabled = currentRole === 'viewer';
   btn.addEventListener('click', () => {
     void (async () => {
       await setPanelApproval(panel, panel.reviewStatus !== 'approved');
@@ -1005,6 +1606,24 @@ async function storeEmbedding(panelId: number): Promise<void> {
     featureVersion: FEATURE_VERSION,
     createdAt: new Date().toISOString(),
   });
+}
+
+async function rebuildStaleEmbeddings(): Promise<void> {
+  const embeddings = await repo.listEmbeddings();
+  const current = new Set(
+    embeddings
+      .filter((embedding) => embedding.featureVersion === FEATURE_VERSION && embedding.dim === PANEL_FEATURE_DIM)
+      .map((embedding) => embedding.panelId),
+  );
+  for (const panel of panels) {
+    if (
+      panel.purpose !== 'training' ||
+      panel.reviewStatus !== 'approved' ||
+      current.has(panel.id) ||
+      !imagesOf(panel.id).some(hasPixels)
+    ) continue;
+    await storeEmbedding(panel.id);
+  }
 }
 
 interface SyncedManualDarkGrade extends ManualDarkGrade {
@@ -1043,6 +1662,7 @@ function deleteButton(panel: PanelRecord): HTMLElement {
   btn.type = 'button';
   btn.className = 'ghost small';
   btn.textContent = '삭제';
+  btn.disabled = currentRole !== 'admin';
   btn.addEventListener('click', () => {
     if (!confirm(`${panel.lotId}/${panel.panelCode} 패널과 라벨을 삭제할까요?`)) return;
     void (async () => {
@@ -1074,7 +1694,7 @@ function renderLabelSummary(labels: AnnotationRecord[]): HTMLElement {
   line.append(name);
 
   const dark = manualDarkGrade(labels, settings);
-  const darkCount = labels.filter((label) => isDarkDotDefect(label.defectId) && label.geomType === 'box').length;
+  const darkCount = labels.filter((label) => isDarkDotDefect(label.defectId) && (label.geomType === 'box' || label.geomType === 'mask')).length;
   if (dark.defectId && darkCount > 0) {
     line.append(badge(`암점 영역 ${darkCount}개 · 합산 ${dark.areaPct.toFixed(2)}% → ${DEFECT_NAME[dark.defectId]}`, 'info'));
   }
@@ -1117,10 +1737,23 @@ function renderVerdict(analysis: PanelAnalysis): HTMLElement {
   line.append(judgement);
 
   if (!good) for (const id of rule.detectedDefectIds) line.append(badge(DEFECT_NAME[id], 'warn'));
+  line.append(badge(`임계값 v${settingsPanel.getConfig().version}`, 'info'));
+  line.append(badge(`촬영 ${inspectionProfile.capture.version}`, 'info'));
+  line.append(badge(`Golden ${inspectionProfile.golden.version}`, 'info'));
+  line.append(badge(
+    `Sorting ${fused.sortingDisposition}`,
+    fused.sortingDisposition === 'OK' ? 'ok' : fused.sortingDisposition === 'NG' ? 'danger' : 'warn',
+  ));
   line.append(badge(`신뢰도 ${fused.confidence.toFixed(2)}`, fused.confidence < 0.6 ? 'warn' : 'ok'));
+  const qualities = [...analysis.qualityByImage.values()];
+  if (qualities.some((quality) => quality.status === 'FAIL')) line.append(badge('전처리 실패', 'danger'));
+  else if (qualities.some((quality) => quality.status === 'REVIEW')) line.append(badge('전처리 검수', 'warn'));
   if (fused.needsReview) line.append(badge('검수 필요', 'danger'));
-  if (rule.suppressed.length > 0) line.append(badge('단일 패턴 검출', 'warn'));
+  if (rule.suppressed.length > 0 || rule.labeled.some((item) => !item.counted)) {
+    line.append(badge('패턴 확인 미충족', 'warn'));
+  }
   if (rule.drivingFlag) line.append(badge('구동불량 의심', 'warn'));
+  if (rule.qualityWarnings.length > 0) line.append(badge('촬영/품질 경고', 'danger'));
   if (fused.neighbors.length > 0) line.append(badge(`kNN 이웃 ${fused.neighbors.length}`, 'info'));
   box.append(line);
 
@@ -1128,6 +1761,12 @@ function renderVerdict(analysis: PanelAnalysis): HTMLElement {
   reason.className = 'reason';
   reason.textContent = fused.decisionReason;
   box.append(reason);
+  if (fused.reviewReasons.length > 0) {
+    const review = document.createElement('p');
+    review.className = 'reason';
+    review.textContent = `검수 사유: ${fused.reviewReasons.map((item) => REVIEW_REASON_NAME[item]).join(' · ')}`;
+    box.append(review);
+  }
   return box;
 }
 
@@ -1294,13 +1933,15 @@ attachLabeling(frameCanvas, {
     const image = selected;
     void (async () => {
       const defectId = selectingDarkArea ? DEFECT.DARK_DOT_SMALL : (defectSelect.value as DefectId);
-      await repo.addAnnotation(buildAnnotation(shape, defectId, image.id, new Date(), settings));
+      const maskRle = selectingDarkArea ? darkMaskInsideSelection(image, shape) : '';
+      const storedShape: Shape = maskRle ? { ...shape, geomType: 'mask' } : shape;
+      await repo.addAnnotation(buildAnnotation(storedShape, defectId, image.id, new Date(), settings, maskRle || undefined));
       annotations = await repo.listAnnotations();
       const dark = await syncPanelDarkGrade(image.panelId);
       const panel = panels.find((candidate) => candidate.id === image.panelId);
       if (panel?.reviewStatus === 'approved' && panel.purpose === 'training') await storeEmbedding(panel.id);
       if (selectingDarkArea && dark.defectId) {
-        flashLabelHint(`암점 선택 영역 합계 ${dark.areaPct.toFixed(2)}% → ${DEFECT_NAME[dark.defectId]}`);
+        flashLabelHint(`암점 ${maskRle ? '분할 마스크' : '박스'} 합계 ${dark.areaPct.toFixed(2)}% → ${DEFECT_NAME[dark.defectId]}`);
       }
       renderLabelList();
       redrawDetail();
@@ -1308,6 +1949,31 @@ attachLabeling(frameCanvas, {
     })();
   },
 });
+
+/** Refine a dark-area drag to residual pixels, falling back to its box if no signal exists. */
+function darkMaskInsideSelection(image: ImageRecord, shape: Shape): string {
+  if (shape.x2 === undefined || shape.y2 === undefined) return '';
+  const rgba = pixels.get(image.id);
+  if (!rgba) return '';
+  const reference = image.detectOk ? image : (imagesOf(image.panelId).find((candidate) => candidate.detectOk) ?? image);
+  const frame = normalizeFrame(rgba, circleOf(reference), reference.rotationDeg);
+  const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings, {
+    withResiduals: true,
+  });
+  if (!detection.darkResidual) return '';
+  const minX = Math.max(0, Math.floor(Math.min(shape.x, shape.x2)));
+  const maxX = Math.min(frame.image.width - 1, Math.ceil(Math.max(shape.x, shape.x2)));
+  const minY = Math.max(0, Math.floor(Math.min(shape.y, shape.y2)));
+  const maxY = Math.min(frame.image.height - 1, Math.ceil(Math.max(shape.y, shape.y2)));
+  const indices: number[] = [];
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const index = y * frame.image.width + x;
+      if (frame.activeMask.data[index] === 1 && detection.darkResidual[index]! < -detection.darkThreshold) indices.push(index);
+    }
+  }
+  return encodeMaskRle(indices);
+}
 
 function renderLabelList(): void {
   labelList.replaceChildren();
@@ -1331,6 +1997,7 @@ function renderLabelList(): void {
     remove.type = 'button';
     remove.className = 'ghost small';
     remove.textContent = '삭제';
+    remove.disabled = currentRole === 'viewer';
     const panelId = selected.panelId;
     remove.addEventListener('click', () => {
       void (async () => {
@@ -1355,6 +2022,13 @@ function renderLabelList(): void {
 function openDetail(image: ImageRecord): void {
   selected = image;
   previewShape = null;
+  mapPattern.value = image.pattern;
+  mapPanel.replaceChildren();
+  const currentPanel = panelOf(image);
+  for (const panel of panels.filter((candidate) => candidate.purpose === currentPanel?.purpose)) {
+    mapPanel.append(new Option(`${panel.lotId} / ${panel.panelCode}`, String(panel.id)));
+  }
+  mapPanel.value = String(image.panelId);
   detailEl.hidden = false;
   moveSettingsPanel($('detail-settings'));
 
@@ -1401,7 +2075,7 @@ function redrawDetail(): void {
   const rgba = pixels.get(image.id);
   if (!rgba) {
     frameBase = null; // a stale base must not resurface via blitPreview
-    for (const canvas of [srcCanvas, frameCanvas]) {
+    for (const canvas of [srcCanvas, frameCanvas, darkResidualCanvas, brightResidualCanvas]) {
       canvas.width = 512;
       canvas.height = 512;
       const ctx = canvas.getContext('2d');
@@ -1431,12 +2105,28 @@ function redrawDetail(): void {
   if (!ctx) return;
   drawFrameOverlay(ctx);
 
-  const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings);
+  const detection = detectDefects(frame.image, frame.activeMask, frame.activeAreaPx, image.pattern, settings, {
+    withResiduals: true,
+  });
+  if (detection.darkResidual) {
+    paintResidual(darkResidualCanvas, detection.darkResidual, frame.image.width, frame.image.height, 'dark');
+  }
+  if (detection.brightResidual) {
+    paintResidual(brightResidualCanvas, detection.brightResidual, frame.image.width, frame.image.height, 'bright');
+  }
   const analysis = verdictsStale ? undefined : verdicts.get(image.panelId);
-  const suppressed = new Set(analysis?.rule.suppressed ?? []);
   drawDetections(
     ctx,
-    detection.detections.map((d) => ({ x: d.x, y: d.y, bbox: d.bbox, counted: !suppressed.has(d.kind) })),
+    detection.detections.map((d) => {
+      const analyzed = analysis?.rule.labeled.find(
+        (item) =>
+          item.pattern === image.pattern &&
+          item.kind === d.kind &&
+          Math.hypot(item.x - d.x, item.y - d.y) < 1,
+      );
+      const fallback = !(analysis?.rule.suppressed.includes(d.kind) ?? false);
+      return { x: d.x, y: d.y, bbox: d.bbox, counted: analyzed?.counted ?? fallback };
+    }),
   );
 
   drawAnnotations(ctx, annotationsOf(image.id));
@@ -1450,24 +2140,166 @@ function redrawDetail(): void {
 
   if (previewShape) drawPreview(ctx, previewShape);
 
-  detailDetections.textContent = describeDetection(detection);
+  detailDetections.textContent = describeDetection(detection, analysis?.qualityByImage.get(image.id));
 }
 
-function describeDetection(detection: ImageDetection): string {
+function paintResidual(
+  canvas: HTMLCanvasElement,
+  residual: Int16Array,
+  width: number,
+  height: number,
+  polarity: 'dark' | 'bright',
+): void {
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const image = ctx.createImageData(width, height);
+  for (let i = 0, p = 0; i < residual.length; i++, p += 4) {
+    const strength = Math.max(0, Math.min(255, polarity === 'dark' ? -residual[i]! * 3 : residual[i]! * 3));
+    if (polarity === 'dark') {
+      image.data[p] = strength;
+      image.data[p + 1] = strength * 0.18;
+      image.data[p + 2] = strength * 0.12;
+    } else {
+      image.data[p] = strength;
+      image.data[p + 1] = strength;
+      image.data[p + 2] = strength * 0.35;
+    }
+    image.data[p + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+function describeDetection(detection: ImageDetection, quality?: PreprocessingQuality): string {
+  const qualityParts = quality
+    ? [
+        `전처리 ${quality.status}`,
+        `원 신뢰 ${quality.radiusConfidence.toFixed(2)}`,
+        `FPCB ${quality.fpcbAlignmentConfidence.toFixed(1)}σ`,
+        `선명도 ${quality.blurScore.toFixed(1)}`,
+      ]
+    : [];
+  const signal = [
+    `Black 배경 ${detection.blackBackgroundMean.toFixed(1)}`,
+    `White 배경 ${detection.whiteBackgroundMean.toFixed(1)}`,
+    `암/명 기준 ${detection.darkThreshold}/${detection.brightThreshold}`,
+  ];
   if (detection.noDisplay !== 'none') {
-    const label = detection.noDisplay === 'full' ? '전체 미점등' : '부분 미점등';
-    return `${label} · 평균 휘도 ${detection.meanLuma.toFixed(1)}`;
+    const label = detection.noDisplay === 'full'
+      ? '전체 미점등'
+      : detection.noDisplay === 'partial'
+        ? '부분 미점등'
+        : '저휘도 검수(HOLD)';
+    return [...qualityParts, label, `평균 휘도 ${detection.meanLuma.toFixed(1)}`, ...signal, ...detection.qualityWarnings].join(' · ');
   }
   const counts = new Map<string, number>();
   for (const d of detection.detections) counts.set(d.kind, (counts.get(d.kind) ?? 0) + 1);
 
-  const parts = [`암점 합산 면적비 ${detection.darkAreaPct.toFixed(2)}%`];
+  const parts = [...qualityParts, `암점 합산 면적비 ${detection.darkAreaPct.toFixed(2)}%`];
+  parts.push(...signal);
+  if (detection.pattern === 'W') {
+    parts.push(
+      `W 포화 전체/배경/결함 ${detection.whiteSaturationPct.toFixed(1)}/${detection.backgroundSaturationPct.toFixed(1)}/${detection.localDefectSaturationPct.toFixed(1)}%`,
+    );
+  }
+  const highResolutionLines = detection.detections.filter((item) => item.analysisScale === 'high-resolution-projection').length;
+  if (highResolutionLines > 0) parts.push(`원본 고해상도 Line 보조검출 ${highResolutionLines}건`);
+  if (detection.detections.length > 0) {
+    const meanContrast =
+      detection.detections.reduce((sum, item) => sum + item.meanContrast, 0) / detection.detections.length;
+    const peakContrast = Math.max(...detection.detections.map((item) => item.peakContrast));
+    parts.push(`검출 대비 평균/최대 ${meanContrast.toFixed(1)}/${peakContrast.toFixed(0)}`);
+  }
   parts.push(counts.size > 0 ? [...counts].map(([k, n]) => `${k} ×${n}`).join(', ') : '검출 없음');
   if (detection.drivingFlag) parts.push('구동불량 의심');
+  parts.push(...detection.qualityWarnings);
   return parts.join(' · ');
 }
 
 // ---------------------------------------------------------------- geometry edits
+
+$('apply-mapping').addEventListener('click', () => {
+  if (!selected || currentRole === 'viewer') return;
+  void (async () => {
+    const image = selected!;
+    const targetPanelId = Number(mapPanel.value);
+    const pattern = mapPattern.value as Pattern;
+    const duplicate = images.find(
+      (candidate) =>
+        candidate.id !== image.id &&
+        candidate.panelId === targetPanelId &&
+        candidate.pattern === pattern,
+    );
+    if (duplicate) {
+      alert(`대상 패널에 ${pattern} 패턴이 이미 있습니다.`);
+      return;
+    }
+    const oldPanelId = image.panelId;
+    const sourcePanel = panels.find((panel) => panel.id === oldPanelId);
+    const targetPanel = panels.find((panel) => panel.id === targetPanelId);
+    if (!targetPanel) {
+      alert('대상 패널을 찾을 수 없습니다.');
+      return;
+    }
+    const crossLot = sourcePanel && sourcePanel.lotId !== targetPanel.lotId;
+    const crossModel = sourcePanel && sourcePanel.model && targetPanel.model && sourcePanel.model !== targetPanel.model;
+    if (crossLot || crossModel) {
+      const mismatch = [crossLot ? `Lot ${sourcePanel?.lotId} → ${targetPanel.lotId}` : '', crossModel ? `Model ${sourcePanel?.model} → ${targetPanel.model}` : '']
+        .filter(Boolean)
+        .join('\n');
+      if (!confirm(`서로 다른 Lot/Model 매핑입니다.\n${mismatch}\n\n감사 이력을 남기고 계속할까요?`)) return;
+    }
+    try {
+      const history = [...(image.mappingHistory ?? []), {
+        at: new Date().toISOString(),
+        fromPanelId: oldPanelId,
+        fromPattern: image.pattern,
+        toPanelId: targetPanelId,
+        toPattern: pattern,
+      }];
+      await repo.updateImage(image.id, {
+        panelId: targetPanelId,
+        pattern,
+        originalMapping: image.originalMapping ?? { panelId: oldPanelId, pattern: image.pattern },
+        mappingHistory: history,
+      });
+      invalidateVerdicts();
+      closeDetail();
+      await reload();
+    } catch (err) {
+      alert(`패턴 매핑 실패: ${String(err)}`);
+    }
+  })();
+});
+
+$('undo-mapping').addEventListener('click', () => {
+  if (!selected || currentRole === 'viewer') return;
+  void (async () => {
+    const image = selected!;
+    const history = [...(image.mappingHistory ?? [])];
+    const last = history.pop();
+    if (!last) {
+      alert('되돌릴 매핑 이력이 없습니다.');
+      return;
+    }
+    const duplicate = images.find((candidate) =>
+      candidate.id !== image.id && candidate.panelId === last.fromPanelId && candidate.pattern === last.fromPattern,
+    );
+    if (duplicate) {
+      alert(`이전 패널에 ${last.fromPattern} 패턴이 이미 있어 되돌릴 수 없습니다.`);
+      return;
+    }
+    await repo.updateImage(image.id, {
+      panelId: last.fromPanelId,
+      pattern: last.fromPattern,
+      mappingHistory: history,
+    });
+    invalidateVerdicts();
+    closeDetail();
+    await reload();
+  })();
+});
 
 async function patchSelected(patch: Partial<ImageRecord>): Promise<void> {
   if (!selected) return;

@@ -9,10 +9,12 @@ import {
 import { gradeDarkDot } from './verdict';
 
 describe('SETTING_SPECS', () => {
-  it('covers every settings key exactly once', () => {
+  it('covers every user-facing settings key exactly once', () => {
     const keys = SETTING_SPECS.map((s) => s.key);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(keys.sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+    expect(keys.sort()).toEqual(
+      Object.keys(DEFAULT_SETTINGS).filter((key) => key !== 'pattern.min_confirmations').sort(),
+    );
   });
 
   it('places every default inside its own slider range', () => {
@@ -77,6 +79,15 @@ describe('sanitizeSettings', () => {
     });
     expect(settings['region.mid_max_r']).toBeGreaterThan(settings['region.center_max_r']);
     expect(repaired.join(' ')).toContain('mid');
+  });
+
+  it('keeps the thick-Line aspect threshold at or below the regular threshold', () => {
+    const { settings, repaired } = sanitizeSettings({
+      'line.min_aspect_ratio': 5,
+      'line.thick_min_aspect_ratio': 9,
+    });
+    expect(settings['line.thick_min_aspect_ratio']).toBe(5);
+    expect(repaired.join(' ')).toContain('두꺼운 Line');
   });
 
   it('round-trips through JSON', () => {

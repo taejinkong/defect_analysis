@@ -1,6 +1,13 @@
 import type { PanelVerdict } from './verdict';
 import type { KnnOutcome, Neighbor } from './knn';
 import { DEFECT, DEFECT_NAME, type DefectId } from './settings';
+import {
+  REVIEW_REASON,
+  agreementStatus,
+  deriveReviewReasons,
+  type AgreementStatus,
+  type ReviewReason,
+} from './review';
 
 export interface FusedVerdict {
   readonly finalJudgementId: DefectId;
@@ -8,8 +15,12 @@ export interface FusedVerdict {
   readonly knnVerdictId: DefectId | null;
   readonly confidence: number;
   readonly needsReview: boolean;
+  readonly agreementStatus: AgreementStatus;
+  readonly reviewReasons: ReviewReason[];
   readonly neighbors: Neighbor[];
   readonly decisionReason: string;
+  /** Fail-safe export: unresolved or unvalidated cases can never become OK. */
+  readonly sortingDisposition: 'OK' | 'NG' | 'HOLD';
 }
 
 /**
@@ -24,7 +35,11 @@ export interface FusedVerdict {
  * the panel for review, and the reviewer's correction becomes tomorrow's
  * training data.
  */
-export function fuseVerdict(rule: PanelVerdict, knn: KnnOutcome): FusedVerdict {
+export function fuseVerdict(
+  rule: PanelVerdict,
+  knn: KnnOutcome,
+  preprocessingReasons: readonly ReviewReason[] = [],
+): FusedVerdict {
   const ruleId = rule.finalJudgementId;
   const knnId = knn.status === 'ok' ? knn.result.verdictId : null;
   const knnConf = knn.status === 'ok' ? knn.result.confidence : 0;
@@ -36,35 +51,51 @@ export function fuseVerdict(rule: PanelVerdict, knn: KnnOutcome): FusedVerdict {
   const missingPenalty = 0.85 ** rule.missingPatterns.length;
   const ruleClause = `Rule: ${DEFECT_NAME[ruleId]}`;
   const knnClause = knnClauseText(knn);
+  const qualityIssue = (rule.qualityWarnings?.length ?? 0) > 0;
+  const baseReviewReasons = deriveReviewReasons({
+    preprocessingReasons,
+    ruleId,
+    knnId,
+    confidence: 1,
+    missingPatterns: rule.missingPatterns.length,
+    multiple: ruleId === DEFECT.MULTI,
+    edgeAdjacent: rule.labeled.some((item) => item.counted && item.rRatio >= 0.95),
+    drivingAbnormality: rule.drivingFlag,
+    patternOnlyDefect: rule.patternOnlyDefect,
+  });
+  if (rule.underexposedReview) baseReviewReasons.push(REVIEW_REASON.UNDEREXPOSED_REVIEW);
+  if (qualityIssue) baseReviewReasons.push(REVIEW_REASON.OUT_OF_VALIDATED_RANGE);
+  const withQuality = (reason: string): string =>
+    qualityIssue ? `${reason} / 품질 경고: ${rule.qualityWarnings!.join(' · ')}` : reason;
 
   // Rule found a real defect and kNN agrees: strongest possible call.
   if (knnId !== null && knnId === ruleId && ruleId !== DEFECT.GOOD) {
-    return build(ruleId, ruleId, knnId, (0.9 + 0.1 * knnConf) * missingPenalty, false, neighbors,
-      `${ruleClause} / ${knnClause} → 일치`);
+    return build(ruleId, ruleId, knnId, (0.9 + 0.1 * knnConf) * missingPenalty, qualityIssue, neighbors,
+      withQuality(`${ruleClause} / ${knnClause} → 일치`), baseReviewReasons);
   }
 
   // Rule found a real defect but kNN is silent or unavailable: Rule stands.
   if (ruleId !== DEFECT.GOOD && knnId === null) {
-    return build(ruleId, ruleId, knnId, 0.6 * missingPenalty, false, neighbors,
-      `${ruleClause} / ${knnClause}`);
+    return build(ruleId, ruleId, knnId, 0.6 * missingPenalty, qualityIssue, neighbors,
+      withQuality(`${ruleClause} / ${knnClause}`), baseReviewReasons);
   }
 
   // Rule found a real defect and kNN disagrees: Rule wins, but flag it.
   if (ruleId !== DEFECT.GOOD && knnId !== null && knnId !== ruleId) {
     return build(ruleId, ruleId, knnId, 0.45 * missingPenalty, true, neighbors,
-      `${ruleClause} / ${knnClause} → 불일치, Rule 우선 · 검수 필요`);
+      withQuality(`${ruleClause} / ${knnClause} → 불일치, Rule 우선 · 검수 필요`), baseReviewReasons);
   }
 
   // Rule says 양품 and kNN names a defect: take kNN, and flag it. This is how a
   // Rule-invisible class (구동불량) surfaces at all.
   if (ruleId === DEFECT.GOOD && knnId !== null && knnId !== DEFECT.GOOD) {
     return build(knnId, ruleId, knnId, 0.5 * knnConf * missingPenalty, true, neighbors,
-      `${ruleClause} / ${knnClause} → kNN 채택 · 검수 필요`);
+      withQuality(`${ruleClause} / ${knnClause} → kNN 채택 · 검수 필요`), baseReviewReasons);
   }
 
   // Both agree it is good, or kNN is unavailable and Rule says good.
-  return build(ruleId, ruleId, knnId, (knnId === DEFECT.GOOD ? 0.8 : 0.6) * missingPenalty, false, neighbors,
-    `${ruleClause} / ${knnClause}`);
+  return build(ruleId, ruleId, knnId, (knnId === DEFECT.GOOD ? 0.8 : 0.6) * missingPenalty, qualityIssue, neighbors,
+    withQuality(`${ruleClause} / ${knnClause}`), baseReviewReasons);
 }
 
 function build(
@@ -75,15 +106,22 @@ function build(
   needsReview: boolean,
   neighbors: Neighbor[],
   decisionReason: string,
+  baseReviewReasons: readonly ReviewReason[],
 ): FusedVerdict {
+  const reviewReasons = new Set(baseReviewReasons);
+  if (confidence < 0.6) reviewReasons.add(REVIEW_REASON.LOW_CONFIDENCE);
+  const requiresReview = needsReview || reviewReasons.size > 0;
   return {
     finalJudgementId,
     ruleVerdictId,
     knnVerdictId,
     confidence: Math.max(0, Math.min(1, confidence)),
-    needsReview,
+    needsReview: requiresReview,
+    agreementStatus: agreementStatus(ruleVerdictId, knnVerdictId),
+    reviewReasons: [...reviewReasons],
     neighbors,
     decisionReason,
+    sortingDisposition: requiresReview ? 'HOLD' : finalJudgementId === DEFECT.GOOD ? 'OK' : 'NG',
   };
 }
 

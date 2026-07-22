@@ -15,6 +15,7 @@ import {
   regionMatrix,
   type DashboardPanel,
 } from '../core/dashboard';
+import { binaryValidationMetrics, separateRealAndSynthetic, type ValidationSample } from '../core/validation';
 
 /**
  * Render the dashboard: a left section-nav plus light, card-based content, in
@@ -42,6 +43,7 @@ export function renderDashboard(
     { id: 'location', label: '위치 상관', build: () => locationSection(panels, points, settings) },
     { id: 'pattern', label: '패턴 분석', build: () => patternSection(panels) },
     { id: 'groups', label: 'Lot · 설비 · 공정', build: () => groupSection(panels) },
+    { id: 'validation', label: '검증', build: () => validationSection(panels) },
   ];
 
   for (const s of sections) {
@@ -77,6 +79,48 @@ export function renderDashboard(
     const el = document.getElementById(s.id);
     if (el) observer.observe(el);
   }
+}
+
+function validationSection(panels: readonly DashboardPanel[]): HTMLElement {
+  const wrap = document.createElement('div');
+  const samples: ValidationSample[] = panels.flatMap((panel) =>
+    panel.automaticJudgementId && panel.reviewerJudgementId
+      ? [{
+        panelId: panel.panelId,
+        lotId: panel.lotId,
+        equipmentId: panel.equipmentId,
+        capturedAt: panel.capturedAt ?? '',
+        synthetic: panel.synthetic === true,
+        predicted: panel.automaticJudgementId,
+        actual: panel.reviewerJudgementId,
+      }]
+      : [],
+  );
+  if (samples.length === 0) {
+    wrap.append(empty('Engineer 승인 Ground Truth가 없습니다. 자동 성능을 표시하지 않습니다.'));
+    return wrap;
+  }
+  const split = separateRealAndSynthetic(samples);
+  const grid = document.createElement('div');
+  grid.className = 'dash-kpis';
+  for (const [name, values] of [['실물', split.real], ['합성', split.synthetic]] as const) {
+    const metrics = binaryValidationMetrics(values);
+    grid.append(
+      kpi(`${name} 검증 표본`, String(metrics.sampleCount), 'Panel 기준 · 서로 합산 금지', 'panel', 'neutral'),
+      kpi(`${name} 불량 Recall`, pct(metrics.recall), `FN ${metrics.fn}`, 'rate', metrics.fn > 0 ? 'bad' : 'neutral'),
+      kpi(`${name} 불량 유출률`, pct(metrics.falseAcceptRate), '실제 불량을 OK로 판정', 'bad', metrics.fn > 0 ? 'bad' : 'neutral'),
+      kpi(`${name} 오검률`, pct(metrics.falseRejectRate), '실제 양품을 NG로 판정', 'review', metrics.fp > 0 ? 'warn' : 'neutral'),
+    );
+  }
+  wrap.append(
+    caption('검증은 Engineer 승인 표본만 사용합니다. 실제 운영 검증 세트는 Panel/Lot/설비/시간 단위로 분리해야 하며 무작위 이미지 분리는 금지합니다.'),
+    grid,
+  );
+  return wrap;
+}
+
+function pct(value: number | null): string {
+  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
 }
 
 function card(id: string, title: string, inner: HTMLElement): HTMLElement {
@@ -131,11 +175,15 @@ function overviewSection(panels: readonly DashboardPanel[]): HTMLElement {
 
   wrap.append(
     kpi('전체 Panel', String(o.total), '', 'panel', 'neutral'),
+    kpi('전체 이미지', String(o.totalImages), '', 'panel', 'neutral'),
     kpi('양품', String(o.good), `${o.total > 0 ? ((o.good / o.total) * 100).toFixed(0) : 0}%`, 'good', 'good'),
     kpi('불량 Panel', String(o.defective), o.defective > 0 ? '조치 검토' : '', 'bad', o.defective > 0 ? 'bad' : 'neutral'),
     kpi('불량률', `${o.defectRatePct.toFixed(1)}%`, '', 'rate', o.defectRatePct > 0 ? 'bad' : 'good'),
     kpi('복수불량', String(o.multi), '', 'multi', o.multi > 0 ? 'warn' : 'neutral'),
     kpi('검수 필요', String(o.needsReview), o.needsReview > 0 ? 'Rule·kNN 불일치' : '', 'review', o.needsReview > 0 ? 'warn' : 'neutral'),
+    kpi('전처리 실패', String(o.preprocessingFailures), '', 'review', o.preprocessingFailures > 0 ? 'bad' : 'good'),
+    kpi('실물 / 합성', `${o.realPanels} / ${o.syntheticPanels}`, '혼합 검증 금지', 'panel', 'neutral'),
+    kpi('자동·검수 일치율', o.reviewerAgreementPct === null ? '—' : `${o.reviewerAgreementPct.toFixed(1)}%`, '검수 완료 표본만', 'rate', 'neutral'),
     kpi('Top 불량', o.topDefect ? DEFECT_NAME[o.topDefect] : '—', '', 'top', 'neutral'),
   );
   return wrap;

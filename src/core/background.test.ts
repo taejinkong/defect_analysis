@@ -88,6 +88,17 @@ describe('fitBackgroundSurface', () => {
     expect(res[63 * W + 64]).toBeGreaterThan(90);
   });
 
+  it('does not mistake a thick bright line for the background class', () => {
+    const src = grayOf(() => 185);
+    for (let y = 52; y <= 75; y++) for (let x = 8; x < 120; x++) src.data[y * W + x] = 245;
+
+    const bg = fitBackgroundSurface(src, MASK);
+    expect(at(bg, 64, 64)).toBeCloseTo(185, -1);
+
+    const res = residual(src, bg, MASK);
+    expect(res[64 * W + 64]).toBeGreaterThan(45);
+  });
+
   it('leaves a clean panel with a near-zero residual', () => {
     const src = grayOf((x, y) => 190 * (1 - 0.1 * (((x - 64) ** 2 + (y - 64) ** 2) / 3600)));
     const res = residual(src, fitBackgroundSurface(src, MASK), MASK);

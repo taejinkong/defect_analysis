@@ -7,8 +7,16 @@ import {
   formatSetting,
   sanitizeSettings,
 } from '../core/settings';
+import {
+  createThresholdConfig,
+  duplicateThresholdConfig,
+  thresholdConfigToSettings,
+  validateThresholdConfig,
+  type ThresholdConfig,
+} from '../core/thresholdConfig';
 
-const STORAGE_KEY = 'defect-analysis.settings.v1';
+const STORAGE_KEY = 'defect-analysis.threshold-config.v2';
+const LEGACY_STORAGE_KEY = 'defect-analysis.settings.v1';
 
 /**
  * Load tuned thresholds from this browser.
@@ -16,19 +24,31 @@ const STORAGE_KEY = 'defect-analysis.settings.v1';
  * IndexedDB and localStorage both vanish when the user clears site data, so the
  * JSON export is the only durable copy. The panel says so.
  */
-export function loadSettings(): Settings {
+export function loadThresholdConfig(): ThresholdConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    return sanitizeSettings(JSON.parse(raw)).settings;
+    if (raw) {
+      const validated = validateThresholdConfig(JSON.parse(raw));
+      if (validated.ok && validated.config) return validated.config;
+    }
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      const validated = validateThresholdConfig(JSON.parse(legacy));
+      if (validated.ok && validated.config) return validated.config;
+    }
   } catch {
-    return DEFAULT_SETTINGS;
+    // Fall through to the shipped versioned defaults.
   }
+  return createThresholdConfig(DEFAULT_SETTINGS);
 }
 
-function persist(settings: Settings): void {
+export function loadSettings(): Settings {
+  return thresholdConfigToSettings(loadThresholdConfig());
+}
+
+function persist(config: ThresholdConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
   } catch {
     // Private browsing or a full quota. Tuning still works for this session.
   }
@@ -44,10 +64,16 @@ export interface SettingsPanelHandlers {
 export interface SettingsPanel {
   readonly element: HTMLElement;
   get(): Settings;
+  getConfig(): ThresholdConfig;
 }
 
-export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHandlers): SettingsPanel {
+export function createSettingsPanel(
+  initial: Settings,
+  handlers: SettingsPanelHandlers,
+  initialConfig: ThresholdConfig = createThresholdConfig(initial),
+): SettingsPanel {
   let settings: Settings = initial;
+  let config = initialConfig;
   const inputs = new Map<SettingKey, { range: HTMLInputElement; readout: HTMLElement }>();
 
   const root = document.createElement('details');
@@ -58,7 +84,9 @@ export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHa
   title.textContent = '임계값 조절';
   const changedBadge = document.createElement('span');
   changedBadge.className = 'settings-changed';
-  summary.append(title, changedBadge);
+  const versionBadge = document.createElement('span');
+  versionBadge.className = 'settings-changed';
+  summary.append(title, versionBadge, changedBadge);
   root.append(summary);
 
   const note = document.createElement('p');
@@ -129,7 +157,7 @@ export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHa
   });
 
   const exportBtn = button('JSON 내보내기', 'ghost', () => {
-    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -154,17 +182,29 @@ export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHa
         alert('JSON을 읽을 수 없습니다.');
         return;
       }
-      const { settings: next, repaired } = sanitizeSettings(parsed);
-      apply(next);
+      const validated = validateThresholdConfig(parsed);
+      if (!validated.ok || !validated.config) {
+        alert(`임계값 파일을 적용하지 않았습니다:\n\n${validated.errors.join('\n')}`);
+        return;
+      }
+      config = validated.config;
+      const next = thresholdConfigToSettings(config);
+      apply(next, undefined, true);
       handlers.onChange(settings);
       handlers.onCommit(settings);
-      if (repaired.length > 0) alert(`설정을 보정했습니다:\n\n${repaired.join('\n')}`);
+      if (validated.migratedLegacy) alert('이전 형식 임계값을 버전 1.0.0 구성으로 변환했습니다.');
     });
   });
 
   const importBtn = button('JSON 가져오기', 'ghost', () => importInput.click());
+  const duplicateBtn = button('버전 복제', 'ghost', () => {
+    config = duplicateThresholdConfig(config);
+    persist(config);
+    versionBadge.textContent = `활성 v${config.version}`;
+    handlers.onCommit(settings);
+  });
 
-  actions.append(resetBtn, exportBtn, importBtn, importInput);
+  actions.append(resetBtn, duplicateBtn, exportBtn, importBtn, importInput);
   body.append(actions);
   root.append(body);
 
@@ -173,10 +213,13 @@ export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHa
    * skipping its own value keeps the thumb from jumping when a constraint
    * repair rewrites a *different* key.
    */
-  function apply(next: Settings, origin?: SettingKey): void {
+  function apply(next: Settings, origin?: SettingKey, preserveImportedConfig = false): void {
     const { settings: clean } = sanitizeSettings(next);
     settings = clean;
-    persist(settings);
+    if (!preserveImportedConfig) {
+      config = createThresholdConfig(settings, config.version, config.updatedBy);
+    }
+    persist(config);
 
     for (const [key, { range, readout }] of inputs) {
       const value = settings[key];
@@ -188,10 +231,11 @@ export function createSettingsPanel(initial: Settings, handlers: SettingsPanelHa
     const changed = changedKeys(settings).length;
     changedBadge.textContent = changed > 0 ? `${changed}개 변경됨` : '';
     changedBadge.hidden = changed === 0;
+    versionBadge.textContent = `활성 v${config.version}`;
   }
 
   apply(settings);
-  return { element: root, get: () => settings };
+  return { element: root, get: () => settings, getConfig: () => config };
 }
 
 function button(text: string, className: string, onClick: () => void): HTMLButtonElement {

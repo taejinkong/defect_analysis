@@ -6,6 +6,9 @@ export interface SearchEntry {
   readonly panelId: number;
   readonly vector: Float32Array;
   readonly labelDefectId: DefectId;
+  readonly lotId?: string;
+  readonly panelCode?: string;
+  readonly equipmentId?: string;
 }
 
 export interface Neighbor {
